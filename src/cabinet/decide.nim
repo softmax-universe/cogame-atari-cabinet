@@ -246,6 +246,18 @@ proc resultRecord*(sim: SimServer): string =
 #  The turn
 # ---------------------------------------------------------------------------
 
+proc holdFallbackStance*(): CabinetStance =
+  ## Neutral guard-at-center fallback for scored LLM failures (never `bulwark`).
+  CabinetStance(
+    stance: stGuard,
+    targetBall: -1,
+    aimAt: -1,
+    postUu: 0'i32,
+    leadTicks: 0,
+    aggression255: 0,
+    source: ssFallback
+  )
+
 proc bulwarkFor*(
   engine: DecisionEngine, sim: SimServer, seat: int
 ): CabinetStance =
@@ -275,7 +287,7 @@ proc repairStance*(
     ballLive.add(ball.state == bsLive)
   if stance.validateStance(cabinet, cabinetOut, ballLive).len == 0:
     return
-  let fallback = engine.bulwarkFor(sim, seat)
+  let fallback = holdFallbackStance()
   # The caps and the bounds are CLAMPED, which is what the parser does with an
   # out-of-range number and what keeps "post hard right" meaning that…
   stance.note = stance.note.truncateRunes(MaxNoteRunes)
@@ -331,7 +343,5 @@ proc acceptOrders*(
     result = false
 
 proc fallback*(engine: var DecisionEngine, sim: SimServer, seat: int) =
-  var stance = engine.bulwarkFor(sim, seat)
-  stance.source = ssFallback
-  engine.stances[seat] = stance
+  engine.stances[seat] = holdFallbackStance()
   engine.haveStance[seat] = true

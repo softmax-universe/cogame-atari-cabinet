@@ -13,11 +13,11 @@ const
   ResendEveryFrames = 24     ## ~1 s of frames at 24 Hz.
   ReconnectAttempts = 6
 
-proc registrationBlob(prompt, scripted, policy: string, numeric: bool): string =
+proc registrationBlob(kind, scripted, policy: string): string =
   ## Policy attribution only. Prompts remain local.
   var node = %*{
     "type": "register",
-    "kind": (if numeric: "external" elif prompt.len > 0: "prompt" else: "scripted"),
+    "kind": kind,
     "policy": policy
   }
   if scripted.len > 0:
@@ -25,6 +25,18 @@ proc registrationBlob(prompt, scripted, policy: string, numeric: bool): string =
   else:
     node["scripted"] = newJNull()
   blobFromSpriteChat($node)
+
+proc holdFallbackStance(): CabinetStance =
+  ## Neutral hold stance for scored LLM failures (never substitutes `bulwark`).
+  CabinetStance(
+    stance: stGuard,
+    targetBall: -1,
+    aimAt: -1,
+    postUu: 0'i32,
+    leadTicks: 0,
+    aggression255: 0,
+    source: ssFallback
+  )
 
 proc readyBlob(): string =
   ## Acknowledge binary viewer frames; standing orders use the Text channel.
@@ -39,15 +51,21 @@ when isMainModule:
     numericUrl = getEnv("PLAYER_NUMERIC_URL").strip()
     prompt = getEnv("PLAYER_PROMPT").strip()
     scripted = getEnv("PLAYER_SCRIPTED").strip()
+    endpoint = getEnv("COWORLD_LLM_ENDPOINT").strip()
+    kind =
+      if numericUrl.len > 0: "external"
+      elif scripted.len > 0: "scripted"
+      elif prompt.len > 0 or endpoint.len > 0: "prompt"
+      else: "scripted"
     label = block:
       let explicit = getEnv("PLAYER_POLICY_LABEL").strip()
       if explicit.len > 0: explicit
       elif numericUrl.len > 0: "numeric"
-      elif prompt.len > 0: "prompt"
+      elif kind == "prompt": "prompt"
       elif scripted.len > 0: scripted
       else: "bulwark"
   let client =
-    if prompt.len > 0:
+    if kind == "prompt":
       newLlmClient(getEnv("PLAYER_MODEL", "claude-haiku-4-5-20251001"),
         parseInt(getEnv("PLAYER_MAX_OUTPUT_TOKENS", "900")))
     else: nil
@@ -75,7 +93,9 @@ when isMainModule:
       let response = parseJson(numericClient.postContent(numericUrl, $request))
       let action = decodeActions(view, response["actions"])
       return $(%*{"type": "orders", "turn": decision["turn"], "action": action})
-    var stance = view.baselineStance(parseBaseline(scripted))
+    var stance =
+      if kind == "prompt": holdFallbackStance()
+      else: view.baselineStance(parseBaseline(scripted))
     var cabinet = -1
     var cabinetOut: array[CabinetCount, bool]
     for index, alias in CabinetAliases:
@@ -91,10 +111,10 @@ when isMainModule:
       live.add(ball["state"].getStr() == "live")
     var evidence = newDecisionAttempt($decision["turn"].getInt() & "-" & $seat, label, aoUnknown)
     var source = "unknown"
-    if prompt.len > 0:
+    if kind == "prompt":
       if client.disabled:
         source = "fallback"
-        stance.source = ssFallback
+        stance = holdFallbackStance()
       else:
         client.throttled = false
         # The player performs inference. All seats run concurrently in their
@@ -122,7 +142,7 @@ when isMainModule:
             cabinetOut, live, view["rules"]["catch_enabled"].getBool(), stance, false)
         except CatchableError as error:
           echo "cabinet player: provider failed: ", error.msg
-          stance.source = ssFallback
+          stance = holdFallbackStance()
           source = "fallback"
           evidence.rejectionReason = some(error.msg)
     let action = stance.stanceActionNode()
@@ -130,7 +150,7 @@ when isMainModule:
       "source": source, "training_attempt": attemptEvidenceJson(evidence)})
 
   echo "cabinet player: kind=",
-    (if prompt.len > 0: "llm" else: "scripted"),
+    (if kind == "prompt": "llm" else: kind),
     " baseline=", (if scripted.len > 0: scripted else: "bulwark"),
     " label=", label
 
@@ -169,7 +189,7 @@ when isMainModule:
   var reconnects = 0
   while true:
     var sessionFrames = 0
-    socket.send(registrationBlob(prompt, scripted, label, numericUrl.len > 0), BinaryMessage)
+    socket.send(registrationBlob(kind, scripted, label), BinaryMessage)
     var resends = 0
     while true:
       var received: Option[Message]
@@ -190,7 +210,7 @@ when isMainModule:
       if resends < RegistrationResends and
           sessionFrames mod ResendEveryFrames == 1:
         inc resends
-        socket.send(registrationBlob(prompt, scripted, label, numericUrl.len > 0), BinaryMessage)
+        socket.send(registrationBlob(kind, scripted, label), BinaryMessage)
       socket.send(readyBlob(), BinaryMessage)
     if sessionFrames == 0 or reconnects >= ReconnectAttempts:
       break
