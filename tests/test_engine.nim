@@ -28,13 +28,11 @@ suite "ordinary player orders":
     check engine.stances[0].source == ssExternal
     check not engine.haveStance[1]
 
-  test "game fallback installs the native legal baseline without a provider":
+  test "game fallback installs neutral hold without running scripted bulwark":
     let game = playingGame(episodeConfig(19))
     var engine = initDecisionEngine(game)
     engine.fallback(game, 1)
-    var expected = game.bulwarkStance(game.cabinetOfSeat(1))
-    expected.source = ssFallback
-    check engine.stances[1] == expected
+    check engine.stances[1] == holdFallbackStance()
     check engine.haveStance[1]
 
   test "the wall-clock stop yields deadline/wall_clock and still scores the board":
