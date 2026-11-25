@@ -123,8 +123,7 @@ the player environment. Optional settings are `PLAYER_MODEL` and
 `tools/ci/ordinary_player_smoke.py` runs four native player processes against
 one game, with a local model stub or explicitly absent credentials. The
 `disconnect` mode terminates one owned player and makes the remaining model
-transport fail. It checks game completion, accepted orders, fallback, results,
-and replay. The `delayed-first` mode starts higher slots before delaying slot
+transport fail. The test checks that the host identifies the failed seat and emits no score. With valid orders it checks game completion, results, and replay. The `delayed-first` mode starts higher slots before delaying slot
 zero, checking that their frame acknowledgements cannot consume the lobby
 budget before admission. Stub choices prove routing, not strength.
 

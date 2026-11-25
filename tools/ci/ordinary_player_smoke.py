@@ -137,6 +137,7 @@ base_env = {
 game_env = dict(
     base_env,
     COGAME_CONFIG_URI=(args.output / "config.json").as_uri(),
+    COGAME_PLAYER_FAILURE_URI=(args.output / "player_failure.json").as_uri(),
     COGAME_RESULTS_URI=(args.output / "results.json").as_uri(),
     COGAME_SAVE_REPLAY_URI=(args.output / "replay.bin").as_uri(),
     COGAME_HOST="127.0.0.1",
@@ -203,8 +204,19 @@ try:
         process.wait(timeout=max(1, 100 - (time.monotonic() - started)))
         for process in processes
     ]
-    expected = [0, -15, 0, 0, 0] if args.mode == "disconnect" else [0] * 5
-    assert exits == expected, exits
+    if args.mode in ("no-credentials", "disconnect"):
+        assert exits[0] != 0, exits
+        failure = json.loads((args.output / "player_failure.json").read_text())
+        assert failure["failed_policy_index"] in (0, 1), failure
+        assert failure["kind"] == "episode_inconclusive", failure
+        assert not (args.output / "results.json").exists()
+        if args.capture:
+            trajectory = [json.loads(line) for line in (args.output / "trajectory.jsonl").read_text().splitlines()]
+            assert trajectory[-1]["status"] == "failed"
+            assert not trajectory[-1]["participant_outcomes"]
+        print(json.dumps(failure))
+        raise SystemExit(0)
+    assert exits == [0] * 5, exits
     results = json.loads((args.output / "results.json").read_text())
     assert results["reason"] == "complete", results
     assert results["policyKinds"] == (
@@ -213,15 +225,8 @@ try:
         else ["prompt", "prompt", "scripted", "scripted"]
     ), results
     assert sum(results["externalTurns"]) > 0, results
-    if args.mode == "disconnect":
-        assert results["fallbackTurns"][0] > 0, results
-        assert results["fallbackTurns"][1] > 0, results
-        assert sum(results["fallbackTurns"][2:]) == 0, results
-    elif args.mode == "no-credentials":
-        assert results["fallbackTurns"] == [10, 10, 0, 0], results
-    else:
-        assert sum(results["fallbackTurns"]) == 0, results
-        assert results["externalTurns"] == [10] * 4, results
+    assert sum(results["fallbackTurns"]) == 0, results
+    assert results["externalTurns"] == [10] * 4, results
     summary = json.loads(
         subprocess.check_output(
             [
@@ -263,14 +268,6 @@ try:
         # (not stuck on NeutralCommand).
         assert summary["commandChangesBySeat"].get("0", 0) > 0, summary["commandChangesBySeat"]
         assert summary["commandChangesBySeat"].get("1", 0) > 0, summary["commandChangesBySeat"]
-    elif args.mode == "no-credentials":
-        assert len(requests) == 0 and len(selected) == 0
-        # Failed/no-credentials turns must never emit fake stance records or move paddles.
-        assert not any(
-            stance["seat"] in (0, 1) for stance in summary["stances"]
-        ), summary["stances"]
-        assert summary["commandChangesBySeat"].get("0", 0) == 0, summary["commandChangesBySeat"]
-        assert summary["commandChangesBySeat"].get("1", 0) == 0, summary["commandChangesBySeat"]
     assert "cabinet llm:" not in (args.output / "game.log").read_text()
     proof = {
         "mode": args.mode,

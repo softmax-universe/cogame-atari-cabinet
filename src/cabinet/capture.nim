@@ -55,7 +55,7 @@ proc finishCapture*(trajectory: DecisionTrajectory, outcome: JsonNode) =
     of "complete": esCompleted
     of "fault": esFailed
     else: esTruncated
-  trajectory.finish(status, outcome, outcome{"scores"})
+  trajectory.finish(status, outcome, if outcome.hasKey("scores"): outcome["scores"] else: newJObject())
   let destination = getEnv(CogameSaveTrajectoryUriEnv)
   if destination.startsWith("http://") or destination.startsWith("https://"):
     let pool = newCurlPool(1)

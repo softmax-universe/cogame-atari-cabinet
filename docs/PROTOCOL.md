@@ -35,9 +35,7 @@ frame containing the complete stance:
 
 The game rejects stale, malformed, or illegal replies and accepts the first
 valid order per seat. All seats share one monotonic `turnBudgetMs` deadline.
-Disconnected, failed, or missing turns are recorded as failures and emit a zero
-physical control byte (`NeutralCommand`, both paddles still, no grip) with no
-synthesized stance. The game retains validation, scoring, results, and replay.
+A failed, missing, or disconnected active seat ends the episode before that turn advances. The host writes the responsible slot and reason to the player failure artifact and leaves the episode unscored.
 
 The per-seat frame carries the **whole board**: the arena, all four mouths
 (open or welded), every paddle, every brick and every ball with its trail.
