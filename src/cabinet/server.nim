@@ -517,7 +517,7 @@ proc runServerLoop*(
             "player slot " & $stuckSlot & " never joined the lobby within " &
             $config.lobbyJoinTimeoutTicks & " lobby ticks (~" &
             $(config.lobbyJoinTimeoutTicks div TargetFps) &
-            "s); its cabinet plays the bulwark baseline")
+            "s); its cabinet receives no input (neutral control)")
           forceStart = true
 
         if not replayLoaded:
@@ -593,7 +593,8 @@ proc runServerLoop*(
             let first = not policy.registered
             policy.registered = true
             policy.kind = registration.kind.truncateRunes(MaxPolicyLabelRunes)
-            policy.baseline = parseBaseline(registration.scripted)
+            if registration.scripted.len > 0:
+              policy.baseline = parseBaseline(registration.scripted)
             policy.label =
               if registration.policy.len > 0: registration.policy
               else: "external"
@@ -602,12 +603,15 @@ proc runServerLoop*(
             if first:
               # ONE `register` record and one log line per seat: the seat
               # re-sends its registration for the first ~10 s of frames.
+              let baselineName =
+                if registration.scripted.len > 0: $policy.baseline else: ""
               replayWriter.writeChat(
                 tickTime(game.tickCount), index,
                 registerRecord(index, game.cabinetOfSeat(index), policy.label,
-                  engine.policyKind(index), $policy.baseline))
+                  engine.policyKind(index), baselineName))
               echo "seat ", index, " registered: kind=",
-                engine.policyKind(index), " baseline=", $policy.baseline
+                engine.policyKind(index),
+                (if baselineName.len > 0: " baseline=" & baselineName else: "")
           appState.chatMessages.clear()
           for (websocket, chatText) in held:
             appState.chatMessages[websocket] = chatText
@@ -647,7 +651,7 @@ proc runServerLoop*(
             turnIndex != lastTurnKey:
           lastTurnKey = turnIndex
           inc turnsRun
-          var waiting, connected, playerFallback: array[CabinetCount, bool]
+          var waiting, connected, recordedFailure: array[CabinetCount, bool]
           var observations: array[CabinetCount, JsonNode]
           var attempts: array[CabinetCount, seq[DecisionAttempt]]
           var selected: array[CabinetCount, Option[string]]
@@ -684,15 +688,32 @@ proc runServerLoop*(
                     continue
                   if websocket in appState.closedSockets:
                     waiting[seat] = false
-                    engine.fallback(game, seat)
-                    replayWriter.writeChat(tickTime(game.tickCount), seat,
-                      fallbackRecord(turnIndex, seat, 0, "disconnect", "player disconnected"))
+                    engine.clearStance(seat)
+                    if not recordedFailure[seat]:
+                      recordedFailure[seat] = true
+                      let fb = fallbackRecord(turnIndex, seat, 0, "disconnect",
+                        "player disconnected")
+                      replayWriter.writeChat(tickTime(game.tickCount), seat, fb)
+                      game.applyStanceRecord(fb)
                   for text in appState.orders.getOrDefault(websocket):
                     pending.add((seat, text))
                   appState.orders.del(websocket)
             for (seat, text) in pending:
               if not waiting[seat]: continue
-              let accepted = engine.acceptOrders(game, seat, turnIndex, text)
+              var isFailureNotice = false
+              var failureReason = ""
+              try:
+                let probe = parseJson(text)
+                if probe.kind == JObject and
+                    probe{"type"}.getStr() == "orders_failed" and
+                    probe{"turn"}.getInt(-1) == turnIndex:
+                  isFailureNotice = true
+                  failureReason = probe{"reason"}.getStr("player decision failed")
+              except CatchableError:
+                discard
+              let accepted =
+                if isFailureNotice: false
+                else: engine.acceptOrders(game, seat, turnIndex, text)
               if not trajectory.isNil:
                 try:
                   let envelope = parseJson(text)
@@ -706,8 +727,7 @@ proc runServerLoop*(
                   receipt.attemptId = $turnIndex & "-" & $seat & "-" & receipt.attemptId
                   if not envelope.hasKey("training_attempt"):
                     receipt.rawResponse = %text
-                  playerFallback[seat] = accepted and envelope{"source"}.getStr() == "fallback"
-                  receipt.accepted = accepted and not playerFallback[seat]
+                  receipt.accepted = accepted
                   if receipt.origin == aoModel and receipt.accepted:
                     try:
                       var cabinetOut: array[CabinetCount, bool]
@@ -718,7 +738,7 @@ proc runServerLoop*(
                       let nativeText = nativeReplyText(receipt.rawResponse.getStr())
                       let parsed = parseCabinetStance(extractJsonObject(nativeText),
                         game.cabinetOfSeat(seat), cabinetOut, live,
-                        game.config.catchEnabled, defaultStance(), false)
+                        game.config.catchEnabled)
                       receipt.response = %nativeText
                       receipt.parsedAction = parsed.stanceActionNode()
                       if receipt.parsedAction != engine.stances[seat].stanceActionNode():
@@ -729,7 +749,9 @@ proc runServerLoop*(
                       receipt.rejectionReason = some("native response cannot establish action: " & error.msg)
                   if receipt.accepted: selected[seat] = some(receipt.attemptId)
                   elif receipt.rejectionReason.isNone:
-                    receipt.rejectionReason = some("invalid orders or player fallback")
+                    receipt.rejectionReason = some(
+                      if failureReason.len > 0: failureReason
+                      else: "invalid or failed orders")
                   var previous = -1
                   for index, known in attempts[seat]:
                     if known.attemptId == receipt.attemptId: previous = index
@@ -739,55 +761,68 @@ proc runServerLoop*(
                   var receipt = newDecisionAttempt($turnIndex & "-" & $seat & "-" & $attempts[seat].len,
                     engine.seats[seat].label, aoUnknown)
                   receipt.rawResponse = %text
-                  receipt.accepted = accepted and engine.stances[seat].source != ssFallback
+                  receipt.accepted = accepted
                   if receipt.accepted: selected[seat] = some(receipt.attemptId)
                   else: receipt.rejectionReason = some("malformed orders/evidence: " & error.msg)
                   attempts[seat].add(receipt)
               if accepted:
                 waiting[seat] = false
                 engine.stances[seat].latencyMs = (getMonoTime() - started).inMilliseconds.int
+              elif isFailureNotice:
+                waiting[seat] = false
+                engine.clearStance(seat)
+                if not recordedFailure[seat]:
+                  recordedFailure[seat] = true
+                  let fb = fallbackRecord(turnIndex, seat, 0, "failed", failureReason)
+                  replayWriter.writeChat(tickTime(game.tickCount), seat, fb)
+                  game.applyStanceRecord(fb)
             if waiting.contains(true):
               sleep(1)
           for seat in 0 ..< CabinetCount:
             if game.cabinets[game.cabinetOfSeat(seat)].isOut:
               continue
             if waiting[seat] or not connected[seat]:
-              engine.fallback(game, seat)
-              replayWriter.writeChat(tickTime(game.tickCount), seat,
-                fallbackRecord(turnIndex, seat, 0, "timeout", "no valid player orders before deadline"))
+              engine.clearStance(seat)
+              if not recordedFailure[seat]:
+                recordedFailure[seat] = true
+                let fb = fallbackRecord(turnIndex, seat, 0, "timeout",
+                  "no valid player orders before deadline")
+                replayWriter.writeChat(tickTime(game.tickCount), seat, fb)
+                game.applyStanceRecord(fb)
           for seat in 0 ..< CabinetCount:
             if game.cabinets[game.cabinetOfSeat(seat)].isOut:
               continue
-            if not engine.haveStance[seat]:
-              continue
-            let stance = engine.stances[seat]
-            let record = boundedStanceRecord(
-              stance, turnIndex, seat, game.cabinetOfSeat(seat))
-            replayWriter.writeChat(tickTime(game.tickCount), seat, record)
-            game.applyStanceRecord(record)
-            if not trajectory.isNil:
-              let action = stance.stanceActionNode()
-              for receipt in attempts[seat].mitems:
-                if receipt.accepted and receipt.origin != aoModel: receipt.parsedAction = action
-              let status = if stance.source == ssFallback: asFallback
-                elif selected[seat].isSome: asAccepted else: asRejected
+            if engine.haveStance[seat]:
+              let stance = engine.stances[seat]
+              let record = boundedStanceRecord(
+                stance, turnIndex, seat, game.cabinetOfSeat(seat))
+              replayWriter.writeChat(tickTime(game.tickCount), seat, record)
+              game.applyStanceRecord(record)
+              if not trajectory.isNil:
+                let action = stance.stanceActionNode()
+                for receipt in attempts[seat].mitems:
+                  if receipt.accepted and receipt.origin != aoModel: receipt.parsedAction = action
+                let status = if selected[seat].isSome: asAccepted else: asRejected
+                trajectory.recordDecision($turnIndex & "-" & $seat, $seat,
+                  observations[seat], attempts[seat], selected[seat], action, status)
+              game.emitEvent(StanceSet, cabinet = game.cabinetOfSeat(seat),
+                amount = turnIndex, detail = $stance.stance)
+            elif not trajectory.isNil:
+              let status = if attempts[seat].len > 0: asRejected else: asMissing
               trajectory.recordDecision($turnIndex & "-" & $seat, $seat,
-                observations[seat], attempts[seat], selected[seat], action, status,
-                fallbackOrigin = (if status == asFallback: some(if playerFallback[seat]: "player_scripted" else: "engine_scripted") else: none(string)))
-            game.emitEvent(StanceSet, cabinet = game.cabinetOfSeat(seat),
-              amount = turnIndex, detail = $stance.stance)
+                observations[seat], attempts[seat], none(string), newJNull(), status)
       # Compile ONE byte per cabinet, in CABINET INDEX ORDER, every tick, and
-      # record it against the driving SEAT.
+      # record it against the driving SEAT. Missing/failed turns emit NeutralCommand
+      # (zero physical control: both paddles still, no grip).
       for cabinet in 0 ..< CabinetCount:
         let seat = game.seatOfCabinet(cabinet)
         if seat < 0:
           continue
-        let stance =
+        commands[seat] =
           if engine.haveStance.len > seat and engine.haveStance[seat]:
-            engine.stances[seat]
+            game.paddleCommand(cabinet, engine.stances[seat])
           else:
-            game.bulwarkStance(cabinet, engine.params)
-        commands[seat] = game.paddleCommand(cabinet, stance)
+            NeutralCommand
       for seat in 0 ..< CabinetCount:
         replayWriter.writeInputMaskChange(
           tickTime(game.tickCount), seat, commands[seat])

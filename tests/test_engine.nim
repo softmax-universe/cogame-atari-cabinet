@@ -28,12 +28,31 @@ suite "ordinary player orders":
     check engine.stances[0].source == ssExternal
     check not engine.haveStance[1]
 
-  test "game fallback installs neutral hold without running scripted bulwark":
+  test "minimal stance-only orders are accepted with fixed defaults (never inherited)":
+    let game = playingGame(episodeConfig(8))
+    var engine = initDecisionEngine(game)
+    let turn0 = %*{"type": "orders", "turn": 0, "action": {
+      "stance": "camp", "post": 20.0, "lead_ticks": 4, "aggression": 0.1
+    }}
+    check engine.acceptOrders(game, 0, 0, $turn0)
+    check engine.stances[0].postUu == 20 * UuPerCu
+    check engine.stances[0].leadTicks == 4
+    let turn1 = %*{"type": "orders", "turn": 1, "action": {"stance": "guard"}}
+    check engine.acceptOrders(game, 0, 1, $turn1)
+    check engine.stances[0].stance == stGuard
+    check engine.stances[0].postUu == 0
+    check engine.stances[0].leadTicks == DefaultLeadTicks
+    check engine.stances[0].aggression255 == DefaultAggression255
+
+  test "missed/failed turns clear stance (no synthesized stance or scripted bulwark)":
     let game = playingGame(episodeConfig(19))
     var engine = initDecisionEngine(game)
-    engine.fallback(game, 1)
-    check engine.stances[1] == holdFallbackStance()
+    check engine.acceptOrders(game, 1, 0, $(%*{"type": "orders", "turn": 0, "action": {"stance": "guard"}}))
     check engine.haveStance[1]
+    engine.clearStance(1)
+    check not engine.haveStance[1]
+    check not engine.acceptOrders(game, 1, 1, $(%*{"type": "orders", "turn": 1, "source": "fallback", "action": {"stance": "guard"}}))
+    check not engine.haveStance[1]
 
   test "the wall-clock stop yields deadline/wall_clock and still scores the board":
     let config = episodeConfig(10)
@@ -66,61 +85,32 @@ suite "ordinary player orders":
     check document["endRule"].getStr == EndRuleSimFault
     check document["scores"].len == CabinetCount
 
-  test "ONE illegal field is repaired, the rest of the stance survives":
-    # A reply that names a ball which was conceded a tick ago used to lose its
-    # stance, its post, its lead and its aggression as well: the whole stance
-    # was replaced with bulwark's and only note/say/source/latency were kept
-    # (r1-9). The note's rule is per FIELD.
+  test "illegal field values are rejected by acceptOrders instead of repaired":
     let config = episodeConfig(14)
     var game = playingGame(config)
     var engine = initDecisionEngine(game)
     let cabinet = game.cabinetOfSeat(0)
     game.balls[1].state = bsServing            ## B2 is not live any more
-    var stance = defaultStance()
-    stance.stance = stCamp
-    stance.postUu = PaddleTravelHalf
-    stance.leadTicks = 3
-    stance.aggression255 = 17
-    stance.note = "hold the post"
-    stance.say = "camping"
-    stance.source = ssExternal
-    stance.targetBall = 1                      ## the ONE illegal field
-    stance.aimAt = (cabinet + 1) mod CabinetCount
-    engine.repairStance(game, 0, stance)
-    check stance.stance == stCamp              ## kept
-    check stance.postUu == PaddleTravelHalf    ## kept
-    check stance.leadTicks == 3                ## kept
-    check stance.aggression255 == 17           ## kept
-    check stance.aimAt == (cabinet + 1) mod CabinetCount
-    check stance.note == "hold the post"
-    check stance.say == "camping"
-    check stance.source == ssExternal
-    check stance.targetBall != 1               ## repaired
-    var cabinetOut: array[CabinetCount, bool]
-    var ballLive: seq[bool]
-    for k in 0 ..< CabinetCount:
-      cabinetOut[k] = game.cabinets[k].isOut
-    for ball in game.balls:
-      ballLive.add(ball.state == bsLive)
-    check stance.validateStance(cabinet, cabinetOut, ballLive) == ""
+    let badBall = %*{"type": "orders", "turn": 0, "action": {
+      "stance": "camp", "target_ball": "B2", "aim_at": "none",
+      "post": 0.0, "lead_ticks": 12, "aggression": 0.5
+    }}
+    check not engine.acceptOrders(game, 0, 0, $badBall)
+    check not engine.haveStance[0]
 
-  test "an out-of-range number is CLAMPED, and aim_at at myself takes bulwark's":
-    let config = episodeConfig(15)
-    var game = playingGame(config)
-    var engine = initDecisionEngine(game)
-    let cabinet = game.cabinetOfSeat(1)
-    var stance = defaultStance()
-    stance.stance = stAim
-    stance.postUu = PaddleTravelHalf * 4       ## illegal
-    stance.leadTicks = 900                     ## illegal
-    stance.aggression255 = -3                  ## illegal
-    stance.aimAt = cabinet                     ## illegal: my own cabinet
-    engine.repairStance(game, 1, stance)
-    check stance.stance == stAim
-    check stance.postUu == PaddleTravelHalf
-    check stance.leadTicks == MaxLeadTicks
-    check stance.aggression255 == 0
-    check stance.aimAt != cabinet
+    let badRange = %*{"type": "orders", "turn": 0, "action": {
+      "stance": "aim", "target_ball": "any", "aim_at": aliasOfCabinet(cabinet),
+      "post": 80.0, "lead_ticks": 900, "aggression": -0.5
+    }}
+    check not engine.acceptOrders(game, 0, 0, $badRange)
+    check not engine.haveStance[0]
+
+    let badSynonym = %*{"type": "orders", "turn": 0, "action": {
+      "stance": "defend", "target_ball": "any", "aim_at": "none",
+      "post": 0.0, "lead_ticks": 12, "aggression": 0.8
+    }}
+    check not engine.acceptOrders(game, 0, 0, $badSynonym)
+    check not engine.haveStance[0]
 
   test "parseRegistration reads the seat's ONE message and drops anything else":
     check parseRegistration("""{"type":"register","kind":"prompt","policy":"x"}""").ok

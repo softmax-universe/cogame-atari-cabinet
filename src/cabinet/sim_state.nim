@@ -184,6 +184,10 @@ proc applyStanceRecord*(sim: var SimServer, record: string) =
   if node{"k"}.getStr() == "register":
     sim.seatPolicyKind[seat] = node["kind"].getStr()
     return
+  if node{"k"}.getStr() == "fallback":
+    inc sim.fallbackTurns[seat]
+    sim.haveStance[seat] = false
+    return
   if node{"k"}.getStr() != "stance":
     return
   var view = StanceView(

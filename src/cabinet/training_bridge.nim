@@ -4,11 +4,10 @@
 import std/[hashes, json, os]
 import sim, decide, stances, baselines, control, numeric_codec, prompts
 
-const NumericSystemPrompt = "Play one Atari Cabinet seat. Reply with a JSON stance: " &
-  "{\"stance\":\"guard|aim|camp|catch|chase\"," &
-  "\"target_ball\":\"B1|B2|any\"," &
-  "\"aim_at\":\"RED|BLUE|GREEN|YELLOW|none\"," &
-  "\"post\":0,\"lead_ticks\":12,\"aggression\":0.8}. " &
+const NumericSystemPrompt = "Play one Atari Cabinet seat. Reply with a JSON object containing \"stance\" " &
+  "(\"guard\"|\"aim\"|\"camp\"|\"catch\"|\"chase\"). Example: {\"stance\":\"guard\"}. " &
+  "Optional fields use fixed defaults when omitted: \"target_ball\":\"any\", " &
+  "\"aim_at\":\"none\", \"post\":0, \"lead_ticks\":12, \"aggression\":0.8. " &
   "You see the public board but no other player's private stance."
 
 var
@@ -48,6 +47,8 @@ proc currentDecision(): JsonNode =
     ],
     "action_schema": {
       "type": "object",
+      "additionalProperties": false,
+      "required": ["stance"],
       "properties": {
         "stance": {"enum": ["guard", "aim", "camp", "catch", "chase"]},
         "target_ball": {"type": "string"},
@@ -121,11 +122,12 @@ proc step(command: JsonNode): JsonNode =
   var stance: CabinetStance
   try:
     stance = parseCabinetStance(extractJsonObject(command["response"].getStr()),
-      cabinet, cabinetOut, ballLive, game.config.catchEnabled,
-      engine.stances[actingSeat], engine.haveStance[actingSeat])
+      cabinet, cabinetOut, ballLive, game.config.catchEnabled)
   except JsonParsingError, StanceError:
-    return %*{"kind": "rejected", "reason": "reply must be a usable JSON stance"}
-  engine.repairStance(game, actingSeat, stance)
+    return %*{"kind": "rejected", "reason": getCurrentExceptionMsg()}
+  let violation = stance.validateStance(cabinet, cabinetOut, ballLive)
+  if violation.len > 0:
+    return %*{"kind": "rejected", "reason": violation}
   engine.stances[actingSeat] = stance
   engine.haveStance[actingSeat] = true
   let action = stanceJson(stance)

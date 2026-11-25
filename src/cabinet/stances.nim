@@ -1,6 +1,5 @@
-## The stance schema: what a cabinet's policy (LLM or scripted) may say, how a
-## reply is parsed TOLERANTLY, and how an illegal reply is REPAIRED instead of
-## rejected.
+## The stance schema: what a cabinet's policy (LLM or scripted) may say, and how
+## a canonical reply is strictly parsed and validated.
 ##
 ## Both policy kinds emit the SAME object, so the two are strictly comparable
 ## and one validator covers both — which is what makes the bounded-orders
@@ -19,7 +18,7 @@ import sim_types
 
 type
   Stance* = enum
-    ## A closed enum. An unrecognised stance is repaired, never dropped.
+    ## A closed enum of canonical stance names.
     stGuard = "guard"
     stAim = "aim"
     stCamp = "camp"
@@ -49,6 +48,10 @@ const
   DefaultLeadTicks* = 12
   DefaultAggression255* = 204          ## 0.8
   MaxLeadTicks* = 48
+  AllowedStanceKeys = [
+    "stance", "target_ball", "aim_at", "post", "lead_ticks", "aggression",
+    "note", "say"
+  ]
 
 proc truncateRunes*(text: string, limit: int): string =
   ## Cuts `text` to at most `limit` RUNES, on a rune boundary. The single
@@ -90,7 +93,7 @@ proc defaultStance*(): CabinetStance =
     source: ssScripted)
 
 # ---------------------------------------------------------------------------
-#  Tolerant parsing
+#  Canonical parsing
 # ---------------------------------------------------------------------------
 
 proc nativeReplyText*(body: string): string =
@@ -105,238 +108,174 @@ proc nativeReplyText*(body: string): string =
     raise newException(StanceError, "reply cut off at max_tokens before any JSON")
 
 proc extractJsonObject*(text: string): JsonNode =
-  ## The outermost balanced `{...}` in a model reply, tolerating markdown
-  ## fences and any prose the model prefixed or suffixed. Falls back to
-  ## first-brace..last-brace when the scan finds no balanced pair, which is
-  ## what recovers a reply whose braces sit inside a quoted string.
-  var
-    depth = 0
-    start = -1
-    inString = false
-    escaped = false
-  for i, ch in text:
-    if inString:
-      if escaped: escaped = false
-      elif ch == '\\': escaped = true
-      elif ch == '"': inString = false
-      continue
-    case ch
-    of '"': inString = true
-    of '{':
-      if depth == 0: start = i
-      inc depth
-    of '}':
-      if depth > 0:
-        dec depth
-        if depth == 0 and start >= 0:
-          try:
-            return parseJson(text[start .. i])
-          except CatchableError:
-            start = -1
-    else: discard
-  let
-    first = text.find('{')
-    last = text.rfind('}')
-  if first < 0 or last <= first:
+  ## Parses a raw JSON object or a single standard outer Markdown JSON fence
+  ## (```json ... ``` or ``` ... ```). Rejects surrounding prose or non-object JSON.
+  var body = text.strip()
+  if body.startsWith("```"):
+    let firstNl = body.find('\n')
+    if firstNl < 0:
+      raise newException(StanceError, "unterminated markdown fence")
+    let header = body[3 ..< firstNl].strip()
+    if header.len > 0 and header != "json":
+      raise newException(StanceError, "unsupported markdown fence language: " & header)
+    let rest = body[firstNl + 1 .. ^1]
+    if not rest.endsWith("```"):
+      raise newException(StanceError, "unterminated markdown fence")
+    let inner = rest[0 ..< rest.len - 3]
+    if inner.len == 0 or inner[^1] != '\n':
+      raise newException(StanceError, "closing markdown fence must be on its own line")
+    body = inner.strip()
+  if body.len == 0 or body[0] != '{' or body[^1] != '}':
     var head = text.strip()
     if head.runeLen > 160:
       head = head.truncateRunes(160) & "..."
     raise newException(
-      StanceError, "no JSON object in reply: " & head.replace("\n", " "))
-  parseJson(text[first .. last])
+      StanceError, "reply must be a JSON object: " & head.replace("\n", " "))
+  let parsed =
+    try:
+      parseJson(body)
+    except CatchableError as e:
+      raise newException(StanceError, "invalid JSON object: " & e.msg)
+  if parsed.isNil or parsed.kind != JObject:
+    raise newException(StanceError, "reply is not a JSON object")
+  parsed
 
 proc parseStanceName*(text: string): tuple[ok: bool, stance: Stance] =
-  ## Case-insensitive, whitespace-tolerant, with the documented synonyms:
-  ## defend->guard, shoot/attack->aim, hold/sit->camp, grab->catch,
-  ## rush->chase.
-  let key = text.strip().toLowerAscii().replace("-", "_").replace(" ", "_")
+  ## Exact canonical stance enum only.
   for stance in Stance:
-    if $stance == key:
+    if $stance == text:
       return (true, stance)
-  case key
-  of "defend", "defence", "defense", "block": (true, stGuard)
-  of "shoot", "attack", "target", "fire": (true, stAim)
-  of "hold", "sit", "idle", "stay", "park": (true, stCamp)
-  of "grab", "hold_ball", "grip": (true, stCatch)
-  of "rush", "charge", "hunt": (true, stChase)
-  else: (false, stGuard)
+  (false, stGuard)
 
-proc readNumber(node: JsonNode): tuple[ok: bool, value: float] =
-  ## An int, a float, or a numeric string. Non-finite reports ok = false so
-  ## the caller applies its own default rather than inventing a value.
-  if node.isNil:
-    return (false, 0.0)
-  case node.kind
-  of JInt: (true, float(node.getBiggestInt()))
-  of JFloat:
-    let f = node.getFloat()
-    if f != f or f > 1.0e9 or f < -1.0e9: (false, 0.0) else: (true, f)
-  of JString:
-    let raw = node.getStr().strip().strip(chars = {'%', '+'})
-    try:
-      let f = parseFloat(raw)
-      if f != f: (false, 0.0) else: (true, f)
-    except CatchableError:
-      (false, 0.0)
-  of JBool: (true, (if node.getBool(): 1.0 else: 0.0))
-  else: (false, 0.0)
+proc readFiniteNumber(node: JsonNode, field: string): float =
+  if node.isNil or node.kind notin {JInt, JFloat}:
+    raise newException(StanceError, field & " must be a number")
+  result =
+    if node.kind == JInt: float(node.getBiggestInt())
+    else: node.getFloat()
+  if classify(result) in {fcNan, fcInf, fcNegInf}:
+    raise newException(StanceError, field & " must be finite")
 
 proc parseTargetBall*(
   node: JsonNode, ballLive: openArray[bool]
 ): int =
-  ## "B1" / "b2" / "ball 1" / "1" / "any". An id outside the set, or a ball
-  ## that is not currently live, becomes "any" (-1) — the autopilot then takes
-  ## the soonest-arriving ball.
-  if node.isNil or node.kind == JNull:
+  ## Canonical target_ball: "any" or "B1".."B<N>" naming a currently live ball.
+  if node.isNil or node.kind != JString:
+    raise newException(StanceError, "target_ball must be a string")
+  let raw = node.getStr()
+  if raw == "any":
     return -1
-  var raw =
-    if node.kind == JString: node.getStr()
-    elif node.kind == JInt: $node.getBiggestInt()
-    else: ""
-  raw = raw.strip().toLowerAscii().truncateRunes(MaxTargetBallRunes + 8)
-  if raw.len == 0 or raw == "any" or raw == "all" or raw == "none":
-    return -1
-  raw = raw.replace("ball", "").replace("b", "").replace("#", "").strip()
-  var index = -1
-  try:
-    index = parseInt(raw) - 1
-  except CatchableError:
-    return -1
-  if index < 0 or index >= ballLive.len or not ballLive[index]:
-    return -1
-  index
+  if raw.len >= 2 and raw[0] == 'B' and raw[1] in {'1' .. '9'}:
+    var allDigits = true
+    for i in 1 ..< raw.len:
+      if raw[i] notin {'0' .. '9'}:
+        allDigits = false
+        break
+    if allDigits:
+      var index = -1
+      try:
+        index = parseInt(raw[1 .. ^1]) - 1
+      except CatchableError:
+        index = -1
+      if index >= 0 and index < ballLive.len and ballLive[index]:
+        return index
+  raise newException(StanceError, "invalid or non-live target_ball: " & raw)
 
 proc parseAimAt*(
   node: JsonNode, myCabinet: int, cabinetOut: openArray[bool]
 ): int =
-  ## RED / BLUE / GREEN / YELLOW or "none", accepted case-insensitively and
-  ## inside prose ("the red cabinet"). Unrecognised, missing, MY OWN alias or
-  ## an OUT cabinet all become "none" (-1), and the autopilot then behaves as
-  ## `guard`.
+  ## Canonical aim_at: "none" or an alive rival's exact alias ("RED", "BLUE",
+  ## "GREEN", "YELLOW"). Never self or an eliminated cabinet.
   if node.isNil or node.kind != JString:
+    raise newException(StanceError, "aim_at must be a string")
+  let raw = node.getStr()
+  if raw == "none":
     return -1
-  let raw = node.getStr().strip().toLowerAscii()
-  if raw.len == 0 or raw == "none" or raw == "nobody" or raw == "null":
-    return -1
-  var found = -1
   for i, alias in CabinetAliases:
-    if alias.toLowerAscii() in raw:
-      if found >= 0 and found != i:
-        return -1                ## two aliases named: ambiguous, so none
-      found = i
-  if found < 0 or found == myCabinet:
-    return -1
-  if found < cabinetOut.len and cabinetOut[found]:
-    return -1
-  found
+    if raw == alias:
+      if i == myCabinet:
+        raise newException(StanceError, "aim_at cannot name own cabinet")
+      if i < cabinetOut.len and cabinetOut[i]:
+        raise newException(StanceError, "aim_at cannot name eliminated cabinet")
+      return i
+  raise newException(StanceError, "invalid aim_at: " & raw)
 
 proc quantisePost*(value: float): int32 =
-  ## Clamped to +/-43.0 cu and quantised to µu. A |post| beyond the travel
-  ## limit is read as a PERCENT of the side and rescaled, which is what
-  ## rescues a model that answered "80" meaning "80% along".
-  var cu = value
+  ## Exact range -43.0..43.0 cu, quantised to µu. Out-of-range values are rejected.
+  if classify(value) in {fcNan, fcInf, fcNegInf}:
+    raise newException(StanceError, "post must be finite")
   let limit = float(PaddleTravelHalf) / float(UuPerCu)
-  if cu > limit or cu < -limit:
-    cu = cu / 100.0 * limit
-  if cu > limit: cu = limit
-  if cu < -limit: cu = -limit
-  int32(round(cu * float(UuPerCu)))
+  if value < -limit or value > limit:
+    raise newException(StanceError, "post is outside -43.0..43.0")
+  int32(round(value * float(UuPerCu)))
 
 proc parseCabinetStance*(
   payload: JsonNode,
   myCabinet: int,
   cabinetOut: openArray[bool],
   ballLive: openArray[bool],
-  catchEnabled: bool,
-  previous: CabinetStance,
-  havePrevious: bool
+  catchEnabled: bool
 ): CabinetStance =
-  ## Turns one parsed reply into a legal stance, REPAIRING every field the
-  ## schema bounds rather than rejecting the reply. Raises StanceError only
-  ## when NO usable field can be recovered — that is the one condition the
-  ## retry and then the scripted fallback exist for.
+  ## Strict canonical stance parser. Only `stance` is required; omitted optional
+  ## fields take fixed documented game defaults (never inherited from prior turns).
+  ## Any supplied optional field must have exact canonical name, type, and legal
+  ## value; unknown keys, aliases, synonyms, and invalid values are rejected.
   if payload.isNil or payload.kind != JObject:
     raise newException(StanceError, "reply is not a JSON object")
+  for key in payload.keys:
+    if key notin AllowedStanceKeys:
+      raise newException(StanceError, "unknown stance field: " & key)
+
   result = defaultStance()
   result.source = ssExternal
-  var usable = 0
 
-  # note / say
-  if not payload{"note"}.isNil and payload{"note"}.kind == JString:
-    result.note = sanitizeNote(payload{"note"}.getStr())
-    if result.note.len > 0:
-      inc usable
-  if not payload{"say"}.isNil and payload{"say"}.kind == JString:
-    result.say = sanitizeSay(payload{"say"}.getStr())
+  # required: stance
+  if not payload.hasKey("stance") or payload["stance"].kind != JString:
+    raise newException(StanceError, "stance must be a canonical string")
+  let parsed = parseStanceName(payload["stance"].getStr())
+  if not parsed.ok:
+    raise newException(StanceError, "invalid stance: " & payload["stance"].getStr())
+  if parsed.stance == stCatch and not catchEnabled:
+    raise newException(StanceError, "catch is not enabled in this ROM")
+  result.stance = parsed.stance
 
-  # stance
-  var stanceNode = payload{"stance"}
-  if stanceNode.isNil or stanceNode.kind != JString:
-    stanceNode = payload{"intent"}          ## a model that reused the word
-  if not stanceNode.isNil and stanceNode.kind == JString:
-    let parsed = parseStanceName(stanceNode.getStr())
-    if parsed.ok:
-      result.stance = parsed.stance
-      inc usable
-    elif havePrevious:
-      result.stance = previous.stance
-    else:
-      result.stance = stGuard
-  elif havePrevious:
-    result.stance = previous.stance
-  # `catch` in a ROM without catchEnabled behaves as `guard`.
-  if result.stance == stCatch and not catchEnabled:
-    result.stance = stGuard
+  # optional: target_ball (default "any" -> -1)
+  if payload.hasKey("target_ball"):
+    result.targetBall = parseTargetBall(payload["target_ball"], ballLive)
 
-  # target_ball
-  let ballNode =
-    if not payload{"target_ball"}.isNil: payload{"target_ball"}
-    else: payload{"targetBall"}
-  if not ballNode.isNil:
-    result.targetBall = parseTargetBall(ballNode, ballLive)
-    inc usable
+  # optional: aim_at (default "none" -> -1)
+  if payload.hasKey("aim_at"):
+    result.aimAt = parseAimAt(payload["aim_at"], myCabinet, cabinetOut)
 
-  # aim_at
-  let aimNode =
-    if not payload{"aim_at"}.isNil: payload{"aim_at"} else: payload{"aimAt"}
-  if not aimNode.isNil:
-    result.aimAt = parseAimAt(aimNode, myCabinet, cabinetOut)
-    inc usable
+  # optional: post (default 0.0 -> 0 µu)
+  if payload.hasKey("post"):
+    result.postUu = quantisePost(readFiniteNumber(payload["post"], "post"))
 
-  # post
-  let post = readNumber(payload{"post"})
-  if post.ok:
-    result.postUu = quantisePost(post.value)
-    inc usable
-  elif havePrevious:
-    result.postUu = previous.postUu
+  # optional: lead_ticks (default 12)
+  if payload.hasKey("lead_ticks"):
+    if payload["lead_ticks"].kind != JInt:
+      raise newException(StanceError, "lead_ticks must be an integer")
+    let lead = payload["lead_ticks"].getBiggestInt()
+    if lead < 0 or lead > MaxLeadTicks:
+      raise newException(StanceError, "lead_ticks is outside 0..48")
+    result.leadTicks = int(lead)
 
-  # lead_ticks
-  let leadNode =
-    if not payload{"lead_ticks"}.isNil: payload{"lead_ticks"}
-    else: payload{"leadTicks"}
-  let lead = readNumber(leadNode)
-  if lead.ok:
-    result.leadTicks = max(0, min(MaxLeadTicks, int(round(lead.value))))
-    inc usable
-  else:
-    result.leadTicks = DefaultLeadTicks
+  # optional: aggression (default 0.8 -> 204)
+  if payload.hasKey("aggression"):
+    let aggr = readFiniteNumber(payload["aggression"], "aggression")
+    if aggr < 0.0 or aggr > 1.0:
+      raise newException(StanceError, "aggression is outside 0.0..1.0")
+    result.aggression255 = int(round(aggr * 255.0))
 
-  # aggression: an integer percentage is divided by 100 when it exceeds 1.
-  let aggression = readNumber(payload{"aggression"})
-  if aggression.ok:
-    var value = aggression.value
-    if value > 1.0:
-      value = value / 100.0
-    if value < 0.0: value = 0.0
-    if value > 1.0: value = 1.0
-    result.aggression255 = int(round(value * 255.0))
-    inc usable
-  else:
-    result.aggression255 = DefaultAggression255
-
-  if usable == 0:
-    raise newException(StanceError, "reply carried no usable stance field")
+  # optional: note / say (default "")
+  if payload.hasKey("note"):
+    if payload["note"].kind != JString:
+      raise newException(StanceError, "note must be a string")
+    result.note = sanitizeNote(payload["note"].getStr())
+  if payload.hasKey("say"):
+    if payload["say"].kind != JString:
+      raise newException(StanceError, "say must be a string")
+    result.say = sanitizeSay(payload["say"].getStr())
 
 proc validateStance*(
   stance: CabinetStance,

@@ -240,7 +240,7 @@ proc playerResultsJson*(sim: SimServer): string =
     cabinets.add(%cabinet)
     policyKinds.add(%(
       if sim.seatPolicyKind[seat].len > 0: sim.seatPolicyKind[seat]
-      else: "scripted"))
+      else: "fallback"))
     scores.add(%sim.scoreOf(cabinet))
     placements.add(%int(cab.placement))
     win.add(%(cab.placement == 1))

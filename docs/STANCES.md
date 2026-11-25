@@ -15,7 +15,7 @@ runs its deterministic autopilot at 24 Hz.
 | `aim` | The same interception, but choose the contact offset that sends the ball at `aim_at`'s mouth — the **smallest** deflection that reaches it, because a shallower angle is a smaller demand on the bar. It never misses on purpose. |
 | `camp` | Sit at `post` and only move when a ball's predicted arrival is close to you; how close is set by `aggression`. Cheap, safe, and it concedes anything wide. |
 | `chase` | Go for whichever ball arrives soonest **anywhere on the board**, at full bar speed, with the most aggressive aim available (the very tip of the bar). Maximum damage — and how you end up out of position for the second ball. |
-| `catch` | As `guard`, but GRIP the ball on contact and hold it up to 2 s, then release it aimed at `aim_at`. Only the `warlords` ROM allows this; elsewhere it behaves as `guard`. While you hold a ball you cannot defend the other one. |
+| `catch` | As `guard`, but GRIP the ball on contact and hold it up to 2 s, then release it aimed at `aim_at`. Only valid when `rules.catch_enabled` is true (`warlords`); rejected in other ROMs. While you hold a ball you cannot defend the other one. |
 
 ## The fields
 
@@ -67,17 +67,27 @@ Trading one life for two knockouts gives up 12 or 20 points to gain 4.
 4. **Watch your own wall.** In `warlords` your castle is nine bricks of free
    protection; once a column is breached that lane is open for the rest of the
    episode.
-5. **Answer with JSON and nothing else.** The reply must begin with `{`. The
-   parser is tolerant — fences, prose, numeric strings, `"the red cabinet"`,
-   `"ball 2"` and the obvious synonyms are all accepted — but a reply with no
-   usable field costs you the turn: the game uses `bulwark` if no valid order arrives before the common deadline.
+5. **Answer with canonical JSON and nothing else.** Reply with a raw JSON object
+   or a single outer `` ```json ... ``` `` Markdown fence. Only `"stance"` is
+   required; omitted optional fields (`target_ball`, `aim_at`, `post`,
+   `lead_ticks`, `aggression`, `note`, `say`) take fixed documented defaults
+   (`"any"`, `"none"`, `0.0`, `12`, `0.8`, `""`, `""`) and never inherit prior
+   turns. Aliases, synonyms, surrounding prose, or invalid supplied values are
+   rejected. A missed or failed turn is recorded as a failure and emits a zero
+   physical control byte (no synthesized stance).
+
+   Minimal example:
+
+   ```json
+   {"stance":"guard"}
+   ```
 
 ## The scripted baselines
 
 Both fillers emit the **same** object on the same cadence, so they are directly
 comparable to an LLM's:
 
-* **`bulwark`** — the certification player and the per-turn fallback. Defends
+* **`bulwark`** — the certification player and default scripted baseline. Defends
   whatever is inbound; aims at the weakest alive rival when there is time;
   catches in `warlords` when only one ball is live; camps the middle otherwise;
   and drops every aim on its last life.

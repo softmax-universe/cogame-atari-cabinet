@@ -26,18 +26,6 @@ proc registrationBlob(kind, scripted, policy: string): string =
     node["scripted"] = newJNull()
   blobFromSpriteChat($node)
 
-proc holdFallbackStance(): CabinetStance =
-  ## Neutral hold stance for scored LLM failures (never substitutes `bulwark`).
-  CabinetStance(
-    stance: stGuard,
-    targetBall: -1,
-    aimAt: -1,
-    postUu: 0'i32,
-    leadTicks: 0,
-    aggression255: 0,
-    source: ssFallback
-  )
-
 proc readyBlob(): string =
   ## Acknowledge binary viewer frames; standing orders use the Text channel.
   result = newString(1)
@@ -52,18 +40,29 @@ when isMainModule:
     prompt = getEnv("PLAYER_PROMPT").strip()
     scripted = getEnv("PLAYER_SCRIPTED").strip()
     endpoint = getEnv("COWORLD_LLM_ENDPOINT").strip()
+    llmEnabled = getEnv("COWORLD_LLM_ENABLED").strip().toLowerAscii() in
+      ["1", "true", "yes"]
     kind =
       if numericUrl.len > 0: "external"
       elif scripted.len > 0: "scripted"
-      elif prompt.len > 0 or endpoint.len > 0: "prompt"
-      else: "scripted"
+      elif llmEnabled or prompt.len > 0 or endpoint.len > 0: "prompt"
+      else:
+        quit("cabinet player: no policy configured (set PLAYER_SCRIPTED, PLAYER_NUMERIC_URL, or COWORLD_LLM_ENABLED/PLAYER_PROMPT)", 1)
+    scriptedBaseline =
+      if kind == "scripted":
+        case scripted.toLowerAscii()
+        of "bulwark": blBulwark
+        of "spinner": blSpinner
+        else:
+          quit("cabinet player: unknown PLAYER_SCRIPTED baseline: " & scripted, 1)
+      else:
+        blBulwark
     label = block:
       let explicit = getEnv("PLAYER_POLICY_LABEL").strip()
       if explicit.len > 0: explicit
       elif numericUrl.len > 0: "numeric"
       elif kind == "prompt": "prompt"
-      elif scripted.len > 0: scripted
-      else: "bulwark"
+      else: $scriptedBaseline
   let client =
     if kind == "prompt":
       newLlmClient(getEnv("PLAYER_MODEL", "claude-haiku-4-5-20251001"),
@@ -93,9 +92,6 @@ when isMainModule:
       let response = parseJson(numericClient.postContent(numericUrl, $request))
       let action = decodeActions(view, response["actions"])
       return $(%*{"type": "orders", "turn": decision["turn"], "action": action})
-    var stance =
-      if kind == "prompt": holdFallbackStance()
-      else: view.baselineStance(parseBaseline(scripted))
     var cabinet = -1
     var cabinetOut: array[CabinetCount, bool]
     for index, alias in CabinetAliases:
@@ -110,48 +106,51 @@ when isMainModule:
     for ball in view["balls"]:
       live.add(ball["state"].getStr() == "live")
     var evidence = newDecisionAttempt($decision["turn"].getInt() & "-" & $seat, label, aoUnknown)
-    var source = "unknown"
     if kind == "prompt":
       if client.disabled:
-        source = "fallback"
-        stance = holdFallbackStance()
-      else:
-        client.throttled = false
-        # The player performs inference. All seats run concurrently in their
-        # own containers; the game owns their shared response deadline.
-        let system = decision["system"].getStr()
-        let user = userMessage(prompt, $view)
-        let request = client.requestFor(system, user, seat)
-        evidence = requestEvidence(evidence.attemptId, label, system, user, request.body)
-        socket.send($( %*{"type": "attempt_started", "turn": decision["turn"],
-          "training_attempt": attemptEvidenceJson(evidence)}), TextMessage)
-        let started = getMonoTime()
-        var batch: RequestBatch
-        batch.post(request.url, request.headers, request.body, "player")
-        let responses = client.curl.makeRequests(batch,
-          max(1, (decision["deadline_ms"].getInt() - 500) div 1000))
-        evidence.latencyMs = some(float((getMonoTime() - started).inMilliseconds))
-        evidence.receivedEvidence(responses[0].response)
-        socket.send($( %*{"type": "attempt_response", "turn": decision["turn"],
-          "training_attempt": attemptEvidenceJson(evidence)}), TextMessage)
-        try:
-          let text = client.textOf(responses[0].response, responses[0].error, request.url)
-          evidence.response = %text
-          source = "model"
-          stance = parseCabinetStance(extractJsonObject(text), cabinet,
-            cabinetOut, live, view["rules"]["catch_enabled"].getBool(), stance, false)
-        except CatchableError as error:
-          echo "cabinet player: provider failed: ", error.msg
-          stance = holdFallbackStance()
-          source = "fallback"
-          evidence.rejectionReason = some(error.msg)
+        let reason = "LLM provider is unavailable"
+        evidence.rejectionReason = some(reason)
+        return $(%*{"type": "orders_failed", "turn": decision["turn"],
+          "reason": reason, "training_attempt": attemptEvidenceJson(evidence)})
+      client.throttled = false
+      # The player performs inference. All seats run concurrently in their
+      # own containers; the game owns their shared response deadline.
+      let system = decision["system"].getStr()
+      let user = userMessage(prompt, $view)
+      let request = client.requestFor(system, user, seat)
+      evidence = requestEvidence(evidence.attemptId, label, system, user, request.body)
+      socket.send($( %*{"type": "attempt_started", "turn": decision["turn"],
+        "training_attempt": attemptEvidenceJson(evidence)}), TextMessage)
+      let started = getMonoTime()
+      var batch: RequestBatch
+      batch.post(request.url, request.headers, request.body, "player")
+      let responses = client.curl.makeRequests(batch,
+        max(1, (decision["deadline_ms"].getInt() - 500) div 1000))
+      evidence.latencyMs = some(float((getMonoTime() - started).inMilliseconds))
+      evidence.receivedEvidence(responses[0].response)
+      socket.send($( %*{"type": "attempt_response", "turn": decision["turn"],
+        "training_attempt": attemptEvidenceJson(evidence)}), TextMessage)
+      try:
+        let text = client.textOf(responses[0].response, responses[0].error, request.url)
+        evidence.response = %text
+        let stance = parseCabinetStance(extractJsonObject(text), cabinet,
+          cabinetOut, live, view["rules"]["catch_enabled"].getBool())
+        let action = stance.stanceActionNode()
+        return $(%*{"type": "orders", "turn": decision["turn"], "action": action,
+          "source": "model", "training_attempt": attemptEvidenceJson(evidence)})
+      except CatchableError as error:
+        echo "cabinet player: provider/parse failed: ", error.msg
+        evidence.rejectionReason = some(error.msg)
+        return $(%*{"type": "orders_failed", "turn": decision["turn"],
+          "reason": error.msg, "training_attempt": attemptEvidenceJson(evidence)})
+    let stance = view.baselineStance(scriptedBaseline)
     let action = stance.stanceActionNode()
     $(%*{"type": "orders", "turn": decision["turn"], "action": action,
-      "source": source, "training_attempt": attemptEvidenceJson(evidence)})
+      "source": "scripted", "training_attempt": attemptEvidenceJson(evidence)})
 
   echo "cabinet player: kind=",
     (if kind == "prompt": "llm" else: kind),
-    " baseline=", (if scripted.len > 0: scripted else: "bulwark"),
+    " baseline=", (if kind == "scripted": $scriptedBaseline else: "none"),
     " label=", label
 
   proc dial(attempts: int): WebSocket =
