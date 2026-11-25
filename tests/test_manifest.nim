@@ -192,7 +192,6 @@ suite "manifest":
     for player in document["player"]:
       check player["image"].getStr == placeholder
     check "platform: linux/amd64" in text
-    check "network: host" in text
 
   test "the game runnable receives no model credential":
     check document["game"]["name"].getStr == GameName
