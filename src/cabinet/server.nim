@@ -12,6 +12,8 @@ when defined(posix):
   from std/posix import SHUT_RDWR, shutdown
 
 type
+  CabinetPlayerFailure* = object of CatchableError
+
   WebSocketSocketFields = object
     server: Server
     clientSocket: SocketHandle
@@ -343,11 +345,11 @@ proc parseRegistration*(
   result.policy = node{"policy"}.getStr()
 
 proc failPlayer(slot: int, kind, message: string, trajectory: DecisionTrajectory) =
-  let failure = %*{"reason": "fault", "failed_policy_index": slot, "kind": kind, "message": message}
+  let failure = %*{"failed_policy_index": slot, "kind": kind, "message": message}
   trajectory.finishCapture(failure)
   writeCogameEnv("COGAME_PLAYER_FAILURE_URI", $failure, "application/json")
   echo "cabinet: unscored failure on seat ", slot, ": ", message
-  quit(1)
+  raise newException(CabinetPlayerFailure, message)
 
 proc runFrameLimiter(
   previousTick: var MonoTime, fastMode: bool, sockets: openArray[WebSocket]
@@ -449,6 +451,9 @@ proc runServerLoop*(
   createThread(serverThread, serverThreadProc,
     ServerThreadArgs(server: serverPtr, address: host, port: port))
   httpServer.waitUntilReady()
+  defer:
+    httpServer.close()
+    joinThread(serverThread)
   echo "atari-cabinet listening on ", host, ":", port
 
   let trajectory = if replayLoaded: nil else: beginCapture("atari-cabinet", "atari-cabinet-" & $config.seed)
@@ -928,8 +933,6 @@ proc runServerLoop*(
         getMonoTime() + initDuration(seconds = ShutdownGraceSeconds)
       while getMonoTime() < graceUntil:
         sleep(200)
-      httpServer.close()
-      joinThread(serverThread)
       break
 
     # Higher slots can connect and acknowledge frames before slot zero joins.
