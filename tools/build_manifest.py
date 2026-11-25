@@ -328,6 +328,18 @@ def build() -> dict:
                 "env": {"PLAYER_SCRIPTED": "bulwark"},
                 "source_url": source_url,
                 "resources": player_resources,
+            },
+            {
+                "type": "player",
+                "id": "atari-cabinet-text",
+                "name": "Cabinet Text Model",
+                "description": "Choose cabinet stances with the selected language model.",
+                "image": image,
+                "run": ["/bin/atari-cabinet-player"],
+                "env": {"PLAYER_PROMPT": "Play to maximize your score.",
+                        "COWORLD_LLM_ENABLED": "true", "COWORLD_LLM_MODEL": "anthropic/claude-haiku-4.5"},
+                "source_url": source_url,
+                "resources": player_resources,
             }
         ],
         # A variant carries EXACTLY id / name / description / game_config: the
@@ -346,7 +358,7 @@ def build() -> dict:
         "certification": {
             # Every declared player entry must occupy at least one slot or cert
             # fails players_missing (raid 0.1.2 -> 0.1.3).
-            "players": [{"player_id": "baseline"} for _ in range(SEATS)],
+            "players": [{"player_id": "atari-cabinet-text" if i == 0 else "baseline"} for i in range(SEATS)],
             "game_config": {
                 "players": [{"name": "P%d" % (i + 1)} for i in range(SEATS)],
                 "slots": list(SLOT_ALIASES),

@@ -519,6 +519,31 @@
           "cpu": "1"
         }
       }
+    },
+    {
+      "type": "player",
+      "id": "atari-cabinet-text",
+      "name": "Cabinet Text Model",
+      "description": "Choose cabinet stances with the selected language model.",
+      "image": "{{ATARI_CABINET_IMAGE}}",
+      "run": [
+        "/bin/atari-cabinet-player"
+      ],
+      "env": {
+        "PLAYER_PROMPT": "Play to maximize your score.",
+        "COWORLD_LLM_ENABLED": "true",
+        "COWORLD_LLM_MODEL": "anthropic/claude-haiku-4.5"
+      },
+      "source_url": "https://github.com/softmax-universe/cogame-atari-cabinet/tree/main",
+      "resources": {
+        "requests": {
+          "cpu": "100m",
+          "memory": "64Mi"
+        },
+        "limits": {
+          "cpu": "1"
+        }
+      }
     }
   ],
   "variants": [
@@ -685,7 +710,7 @@
   "certification": {
     "players": [
       {
-        "player_id": "baseline"
+        "player_id": "atari-cabinet-text"
       },
       {
         "player_id": "baseline"
