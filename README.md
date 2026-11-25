@@ -31,8 +31,10 @@ private observation. The player returns a complete stance over
 `atari-cabinet.player.v2`. Scripted, prompt, and trained policies use this same
 interface. Prompts and inference credentials stay in the player process.
 
-The game strictly validates canonical orders and uses a neutral hold fallback on
-invalid, missing, or disconnected players. A deterministic autopilot compiles
+The game strictly validates canonical orders. Missing, invalid, failed, or
+disconnected turns emit a zero physical control byte (`NeutralCommand`, both
+paddles still, no grip) and are recorded as missed/failed turns — never a
+synthesized stance or scripted baseline. A deterministic autopilot compiles
 accepted stances into recorded command bytes at 24 Hz. The replay needs no model
 calls.
 

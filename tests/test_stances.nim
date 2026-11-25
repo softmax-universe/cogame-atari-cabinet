@@ -53,21 +53,34 @@ suite "stances":
     expect StanceError:
       discard parse("I think " & validJson() & " is right")
 
-  test "required fields must all be present and unknown aliases are rejected":
-    for missing in ["stance", "target_ball", "aim_at", "post", "lead_ticks", "aggression"]:
-      var node = parseJson(validJson())
-      node.delete(missing)
+  test "only stance is required; omitted optional fields use fixed defaults":
+    let minimal = parse("""{"stance":"guard"}""")
+    check minimal.stance == stGuard
+    check minimal.targetBall == -1
+    check minimal.aimAt == -1
+    check minimal.postUu == 0
+    check minimal.leadTicks == DefaultLeadTicks
+    check minimal.aggression255 == DefaultAggression255
+    check minimal.note == ""
+    check minimal.say == ""
+
+    # missing stance is rejected
+    var noStance = parseJson(validJson())
+    noStance.delete("stance")
+    expect StanceError:
+      discard parse($noStance)
+
+    # explicit null for optional fields is rejected (never coerced)
+    for field in ["target_ball", "aim_at", "post", "lead_ticks", "aggression", "note", "say"]:
+      var node = parseJson("""{"stance":"guard"}""")
+      node[field] = newJNull()
       expect StanceError:
         discard parse($node)
-    # optional note/say may be omitted
-    var minimal = parseJson(validJson())
-    minimal.delete("note")
-    minimal.delete("say")
-    check parse($minimal).stance == stGuard
 
+    # unknown alias keys are rejected
     for alias in [("intent", %"guard"), ("targetBall", %"B1"),
                   ("aimAt", %"BLUE"), ("leadTicks", %12)]:
-      var node = parseJson(validJson())
+      var node = parseJson("""{"stance":"guard"}""")
       node[alias[0]] = alias[1]
       expect StanceError:
         discard parse($node)

@@ -68,17 +68,18 @@ Trading one life for two knockouts gives up 12 or 20 points to gain 4.
    protection; once a column is breached that lane is open for the rest of the
    episode.
 5. **Answer with canonical JSON and nothing else.** Reply with a raw JSON object
-   or a single outer `` ```json ... ``` `` Markdown fence. All six action fields
-   (`stance`, `target_ball`, `aim_at`, `post`, `lead_ticks`, `aggression`) are
-   required with exact canonical names, types, and legal values (`note` and `say`
-   are optional). Aliases, synonyms, surrounding prose, out-of-range numbers, or
-   illegal targets are rejected; if no valid order arrives before the common
-   deadline, the game applies a neutral hold fallback.
+   or a single outer `` ```json ... ``` `` Markdown fence. Only `"stance"` is
+   required; omitted optional fields (`target_ball`, `aim_at`, `post`,
+   `lead_ticks`, `aggression`, `note`, `say`) take fixed documented defaults
+   (`"any"`, `"none"`, `0.0`, `12`, `0.8`, `""`, `""`) and never inherit prior
+   turns. Aliases, synonyms, surrounding prose, or invalid supplied values are
+   rejected. A missed or failed turn is recorded as a failure and emits a zero
+   physical control byte (no synthesized stance).
 
-   Example:
+   Minimal example:
 
    ```json
-   {"stance":"guard","target_ball":"any","aim_at":"none","post":0.0,"lead_ticks":12,"aggression":0.8,"note":"defend center","say":""}
+   {"stance":"guard"}
    ```
 
 ## The scripted baselines

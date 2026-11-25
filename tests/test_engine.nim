@@ -28,12 +28,31 @@ suite "ordinary player orders":
     check engine.stances[0].source == ssExternal
     check not engine.haveStance[1]
 
-  test "game fallback installs neutral hold without running scripted bulwark":
+  test "minimal stance-only orders are accepted with fixed defaults (never inherited)":
+    let game = playingGame(episodeConfig(8))
+    var engine = initDecisionEngine(game)
+    let turn0 = %*{"type": "orders", "turn": 0, "action": {
+      "stance": "camp", "post": 20.0, "lead_ticks": 4, "aggression": 0.1
+    }}
+    check engine.acceptOrders(game, 0, 0, $turn0)
+    check engine.stances[0].postUu == 20 * UuPerCu
+    check engine.stances[0].leadTicks == 4
+    let turn1 = %*{"type": "orders", "turn": 1, "action": {"stance": "guard"}}
+    check engine.acceptOrders(game, 0, 1, $turn1)
+    check engine.stances[0].stance == stGuard
+    check engine.stances[0].postUu == 0
+    check engine.stances[0].leadTicks == DefaultLeadTicks
+    check engine.stances[0].aggression255 == DefaultAggression255
+
+  test "missed/failed turns clear stance (no synthesized stance or scripted bulwark)":
     let game = playingGame(episodeConfig(19))
     var engine = initDecisionEngine(game)
-    engine.fallback(game, 1)
-    check engine.stances[1] == holdFallbackStance()
+    check engine.acceptOrders(game, 1, 0, $(%*{"type": "orders", "turn": 0, "action": {"stance": "guard"}}))
     check engine.haveStance[1]
+    engine.clearStance(1)
+    check not engine.haveStance[1]
+    check not engine.acceptOrders(game, 1, 1, $(%*{"type": "orders", "turn": 1, "source": "fallback", "action": {"stance": "guard"}}))
+    check not engine.haveStance[1]
 
   test "the wall-clock stop yields deadline/wall_clock and still scores the board":
     let config = episodeConfig(10)

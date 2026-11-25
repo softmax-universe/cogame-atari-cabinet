@@ -259,8 +259,18 @@ try:
             request["system"].startswith("You operate one of four arcade cabinets")
             for request in requests
         )
+        # Verify the model's chosen stance produced real physical control changes
+        # (not stuck on NeutralCommand).
+        assert summary["commandChangesBySeat"].get("0", 0) > 0, summary["commandChangesBySeat"]
+        assert summary["commandChangesBySeat"].get("1", 0) > 0, summary["commandChangesBySeat"]
     elif args.mode == "no-credentials":
         assert len(requests) == 0 and len(selected) == 0
+        # Failed/no-credentials turns must never emit fake stance records or move paddles.
+        assert not any(
+            stance["seat"] in (0, 1) for stance in summary["stances"]
+        ), summary["stances"]
+        assert summary["commandChangesBySeat"].get("0", 0) == 0, summary["commandChangesBySeat"]
+        assert summary["commandChangesBySeat"].get("1", 0) == 0, summary["commandChangesBySeat"]
     assert "cabinet llm:" not in (args.output / "game.log").read_text()
     proof = {
         "mode": args.mode,

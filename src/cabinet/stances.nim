@@ -92,18 +92,6 @@ proc defaultStance*(): CabinetStance =
     leadTicks: DefaultLeadTicks, aggression255: DefaultAggression255,
     source: ssScripted)
 
-proc holdFallbackStance*(): CabinetStance =
-  ## Neutral guard-at-center fallback for failed/missing turns (never `bulwark`).
-  CabinetStance(
-    stance: stGuard,
-    targetBall: -1,
-    aimAt: -1,
-    postUu: 0'i32,
-    leadTicks: 0,
-    aggression255: 0,
-    source: ssFallback
-  )
-
 # ---------------------------------------------------------------------------
 #  Canonical parsing
 # ---------------------------------------------------------------------------
@@ -228,10 +216,10 @@ proc parseCabinetStance*(
   ballLive: openArray[bool],
   catchEnabled: bool
 ): CabinetStance =
-  ## Turns one parsed reply into a legal stance. Requires all six canonical
-  ## action fields with exact names, types, and legal ranges; rejects unknown
-  ## keys, aliases, synonyms, and illegal targets. Optional `note` and `say`
-  ## are rune-capped.
+  ## Strict canonical stance parser. Only `stance` is required; omitted optional
+  ## fields take fixed documented game defaults (never inherited from prior turns).
+  ## Any supplied optional field must have exact canonical name, type, and legal
+  ## value; unknown keys, aliases, synonyms, and invalid values are rejected.
   if payload.isNil or payload.kind != JObject:
     raise newException(StanceError, "reply is not a JSON object")
   for key in payload.keys:
@@ -241,17 +229,7 @@ proc parseCabinetStance*(
   result = defaultStance()
   result.source = ssExternal
 
-  # optional note / say
-  if payload.hasKey("note") and payload["note"].kind != JNull:
-    if payload["note"].kind != JString:
-      raise newException(StanceError, "note must be a string")
-    result.note = sanitizeNote(payload["note"].getStr())
-  if payload.hasKey("say") and payload["say"].kind != JNull:
-    if payload["say"].kind != JString:
-      raise newException(StanceError, "say must be a string")
-    result.say = sanitizeSay(payload["say"].getStr())
-
-  # stance
+  # required: stance
   if not payload.hasKey("stance") or payload["stance"].kind != JString:
     raise newException(StanceError, "stance must be a canonical string")
   let parsed = parseStanceName(payload["stance"].getStr())
@@ -261,36 +239,43 @@ proc parseCabinetStance*(
     raise newException(StanceError, "catch is not enabled in this ROM")
   result.stance = parsed.stance
 
-  # target_ball
-  if not payload.hasKey("target_ball"):
-    raise newException(StanceError, "missing target_ball")
-  result.targetBall = parseTargetBall(payload["target_ball"], ballLive)
+  # optional: target_ball (default "any" -> -1)
+  if payload.hasKey("target_ball"):
+    result.targetBall = parseTargetBall(payload["target_ball"], ballLive)
 
-  # aim_at
-  if not payload.hasKey("aim_at"):
-    raise newException(StanceError, "missing aim_at")
-  result.aimAt = parseAimAt(payload["aim_at"], myCabinet, cabinetOut)
+  # optional: aim_at (default "none" -> -1)
+  if payload.hasKey("aim_at"):
+    result.aimAt = parseAimAt(payload["aim_at"], myCabinet, cabinetOut)
 
-  # post
-  if not payload.hasKey("post"):
-    raise newException(StanceError, "missing post")
-  result.postUu = quantisePost(readFiniteNumber(payload["post"], "post"))
+  # optional: post (default 0.0 -> 0 µu)
+  if payload.hasKey("post"):
+    result.postUu = quantisePost(readFiniteNumber(payload["post"], "post"))
 
-  # lead_ticks
-  if not payload.hasKey("lead_ticks") or payload["lead_ticks"].kind != JInt:
-    raise newException(StanceError, "lead_ticks must be an integer")
-  let lead = payload["lead_ticks"].getBiggestInt()
-  if lead < 0 or lead > MaxLeadTicks:
-    raise newException(StanceError, "lead_ticks is outside 0..48")
-  result.leadTicks = int(lead)
+  # optional: lead_ticks (default 12)
+  if payload.hasKey("lead_ticks"):
+    if payload["lead_ticks"].kind != JInt:
+      raise newException(StanceError, "lead_ticks must be an integer")
+    let lead = payload["lead_ticks"].getBiggestInt()
+    if lead < 0 or lead > MaxLeadTicks:
+      raise newException(StanceError, "lead_ticks is outside 0..48")
+    result.leadTicks = int(lead)
 
-  # aggression
-  if not payload.hasKey("aggression"):
-    raise newException(StanceError, "missing aggression")
-  let aggr = readFiniteNumber(payload["aggression"], "aggression")
-  if aggr < 0.0 or aggr > 1.0:
-    raise newException(StanceError, "aggression is outside 0.0..1.0")
-  result.aggression255 = int(round(aggr * 255.0))
+  # optional: aggression (default 0.8 -> 204)
+  if payload.hasKey("aggression"):
+    let aggr = readFiniteNumber(payload["aggression"], "aggression")
+    if aggr < 0.0 or aggr > 1.0:
+      raise newException(StanceError, "aggression is outside 0.0..1.0")
+    result.aggression255 = int(round(aggr * 255.0))
+
+  # optional: note / say (default "")
+  if payload.hasKey("note"):
+    if payload["note"].kind != JString:
+      raise newException(StanceError, "note must be a string")
+    result.note = sanitizeNote(payload["note"].getStr())
+  if payload.hasKey("say"):
+    if payload["say"].kind != JString:
+      raise newException(StanceError, "say must be a string")
+    result.say = sanitizeSay(payload["say"].getStr())
 
 proc validateStance*(
   stance: CabinetStance,

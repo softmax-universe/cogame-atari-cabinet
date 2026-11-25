@@ -35,9 +35,9 @@ frame containing the complete stance:
 
 The game rejects stale, malformed, or illegal replies and accepts the first
 valid order per seat. All seats share one monotonic `turnBudgetMs` deadline.
-Disconnected seats immediately use a neutral hold fallback; missing or rejected
-orders use it at the deadline. The game retains validation, scoring, results,
-and replay.
+Disconnected, failed, or missing turns are recorded as failures and emit a zero
+physical control byte (`NeutralCommand`, both paddles still, no grip) with no
+synthesized stance. The game retains validation, scoring, results, and replay.
 
 The per-seat frame carries the **whole board**: the arena, all four mouths
 (open or welded), every paddle, every brick and every ball with its trail.
@@ -91,28 +91,38 @@ direction; every real player name; and any host or wall-clock fact.
 
 ## The stance reply
 
+Minimal example:
+
 ```json
-{"note": "BLUE is on 1 life and its wall is down to 2; take the free shot",
- "stance": "aim", "target_ball": "B1", "aim_at": "BLUE",
- "post": 0.0, "lead_ticks": 12, "aggression": 0.8, "say": "BLUE first"}
+{"stance": "guard"}
 ```
 
-| field | cap / legal values | validation |
+Full example with optional fields:
+
+```json
+{"stance": "aim", "target_ball": "B1", "aim_at": "BLUE",
+ "post": 0.0, "lead_ticks": 12, "aggression": 0.8,
+ "note": "BLUE is on 1 life and its wall is down to 2; take the free shot",
+ "say": "BLUE first"}
+```
+
+| field | required / default | legal values & validation |
 |---|---|---|
-| `note` | optional string, ≤ 160 runes | truncated to 160 runes; non-string rejected |
-| `stance` | required string: `guard`, `aim`, `camp`, `catch`, `chase` | exact canonical enum only; `catch` rejected unless `catch_enabled` is true |
-| `target_ball` | required string: `B1`…`B<ballCount>` (currently live) or `any` | non-live or out-of-range ball rejected |
-| `aim_at` | required string: alive rival alias (`RED`, `BLUE`, `GREEN`, `YELLOW`) or `none` | self, eliminated rival, or unknown alias rejected |
-| `post` | required finite number, `-43.0..43.0`, quantised to µu | out-of-range or non-number rejected |
-| `lead_ticks` | required integer, `0..48` | out-of-range or non-integer rejected |
-| `aggression` | required finite number, `0.0..1.0`, quantised to `0..255` | out-of-range or non-number rejected |
-| `say` | optional string, ≤ 48 runes | truncated to 48 runes, then printable-ASCII shout sanitiser (strips `{`/`}`); non-string rejected |
+| `stance` | **required** | exact canonical string: `guard`, `aim`, `camp`, `catch`, `chase`; `catch` rejected unless `catch_enabled` is true |
+| `target_ball` | optional (default `"any"`) | exact string `B1`…`B<ballCount>` (currently live) or `"any"`; invalid or non-live rejected |
+| `aim_at` | optional (default `"none"`) | exact alive rival alias (`RED`, `BLUE`, `GREEN`, `YELLOW`) or `"none"`; self, eliminated, or unknown rejected |
+| `post` | optional (default `0.0`) | finite number in `-43.0..43.0`, quantised to µu; out-of-range or non-number rejected |
+| `lead_ticks` | optional (default `12`) | integer in `0..48`; out-of-range or non-integer rejected |
+| `aggression` | optional (default `0.8`) | finite number in `0.0..1.0`, quantised to `0..255`; out-of-range or non-number rejected |
+| `note` | optional (default `""`) | string ≤ 160 runes (truncated on rune boundary); non-string rejected |
+| `say` | optional (default `""`) | string ≤ 48 runes (rune-truncated, printable-ASCII, `{`/`}` stripped); non-string rejected |
 
 Replies must be either a raw JSON object or a single outer `` ```json ... ``` ``
-Markdown fence with no surrounding prose. Unknown fields, camelCase or synonym
-aliases, stringified numbers, percentage rescaling, and illegal targets are
-rejected; the game applies a neutral hold fallback if no valid order arrives
-before the common deadline.
+Markdown fence with no surrounding prose. Only `stance` is required; omitted
+optional fields use the fixed defaults above (never inherited from prior turns).
+Unknown fields, camelCase or synonym aliases, stringified numbers, percentage
+rescaling, and invalid supplied values are rejected. Failed or missing turns
+emit `NeutralCommand` (zero physical control) and are recorded as failures.
 
 **Every recorded string is truncated on RUNE boundaries**, never bytes: a
 byte-truncated multi-byte character renders in a browser and then fails a

@@ -80,11 +80,9 @@ return where you told it to. You choose WHAT to defend and WHOM to shoot.
 """
 
 const OutputFormat = """Reply with a single JSON object and NOTHING else (raw JSON or a single ```json ... ``` fence).
-Required fields: "stance", "target_ball", "aim_at", "post", "lead_ticks", "aggression".
-Optional fields: "note", "say". Use exact canonical field names and values.
+Only "stance" is required. Omitted optional fields use fixed defaults below (never inherited from prior turns). Invalid supplied values are rejected.
 Schema:
-{"note":"<=160 chars, your reasoning (optional)",
- "stance":"guard"|"aim"|"camp"|"catch"|"chase",
+{"stance":"guard"|"aim"|"camp"|"catch"|"chase",   // REQUIRED
    // guard : intercept the ball named in "target_ball" (or, if it will not
    //         reach you, the ball that reaches you soonest) and return it
    //         straight back off the middle of the bar. Safest.
@@ -102,16 +100,15 @@ Schema:
    //         then release it aimed at "aim_at". Only valid when
    //         rules.catch_enabled is true (WARLORDS); rejected in other ROMs.
    //         While you hold a ball you cannot defend the other one.
- "target_ball":"B1"|"B2"|"any",   // must name a currently live ball, or "any"
- "aim_at":"RED"|"BLUE"|"GREEN"|"YELLOW"|"none",   // alive rival only, never yourself or out
- "post":-43.0..43.0,        // where "camp" idles, in along-units on your side
-                            // (0 = the centre of your mouth)
- "lead_ticks":0..48,        // integer; how far ahead the autopilot commits the bar
-                            // (24 ticks = 1 second)
- "aggression":0.0..1.0,     // 0 = never leave the post, 1 = chase everything
- "say":"<=48 chars"}        // optional; spectators only, no cabinet ever sees it
+ "target_ball":"B1"|"B2"|"any",   // optional (default "any"); must be a live ball or "any"
+ "aim_at":"RED"|"BLUE"|"GREEN"|"YELLOW"|"none",   // optional (default "none"); alive rival only, never yourself or out
+ "post":-43.0..43.0,        // optional (default 0.0); where "camp" idles on your side (0 = mouth centre)
+ "lead_ticks":0..48,        // optional integer (default 12); how far ahead the autopilot commits (24 ticks = 1 s)
+ "aggression":0.0..1.0,     // optional (default 0.8); 0 = never leave post, 1 = chase everything
+ "note":"<=160 chars",      // optional (default ""); private reasoning
+ "say":"<=48 chars"}        // optional (default ""); spectators only, no cabinet ever sees it
 Example:
-{"stance":"guard","target_ball":"any","aim_at":"none","post":0.0,"lead_ticks":12,"aggression":0.8,"note":"defend center","say":""}
+{"stance":"guard"}
 """
 
 const CanonicalSystemPrompt* = Introduction & Mechanics & Visibility & Cadence & OutputFormat

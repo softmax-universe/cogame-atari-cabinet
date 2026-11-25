@@ -22,8 +22,7 @@ proc initDecisionEngine*(sim: SimServer): DecisionEngine =
   result.haveStance = newSeq[bool](CabinetCount)
   result.params = DefaultBaselineParams
   for i in 0 ..< result.seats.len:
-    result.seats[i].baseline = blBulwark
-    result.seats[i].label = "bulwark"
+    result.seats[i].label = "unregistered"
     result.stances[i] = defaultStance()
 
 proc policyKind*(engine: DecisionEngine, seat: int): string =
@@ -250,11 +249,13 @@ proc acceptOrders*(
   engine: var DecisionEngine, sim: SimServer, seat, turnIndex: int,
   text: string
 ): bool =
-  ## Reject stale, malformed, or illegal orders; the common deadline supplies fallback.
+  ## Reject stale, malformed, or illegal orders; missed/failed turns emit zero control.
   try:
     let node = parseJson(text)
     if node.kind != JObject or node{"type"}.getStr() != "orders" or
         node{"turn"}.getInt(-1) != turnIndex or not node.hasKey("action"):
+      return false
+    if node{"source"}.getStr() == "fallback":
       return false
     let cabinet = sim.cabinetOfSeat(seat)
     var cabinetOut: array[CabinetCount, bool]
@@ -267,13 +268,15 @@ proc acceptOrders*(
       node["action"], cabinet, cabinetOut, live, sim.config.catchEnabled)
     if stance.validateStance(cabinet, cabinetOut, live).len > 0:
       return false
-    stance.source = if node{"source"}.getStr() == "fallback": ssFallback else: ssExternal
+    stance.source = ssExternal
     engine.stances[seat] = stance
     engine.haveStance[seat] = true
     result = true
   except CatchableError:
     result = false
 
-proc fallback*(engine: var DecisionEngine, sim: SimServer, seat: int) =
-  engine.stances[seat] = holdFallbackStance()
-  engine.haveStance[seat] = true
+proc clearStance*(engine: var DecisionEngine, seat: int) =
+  ## Clear any standing stance on a missed/failed turn so the seat emits
+  ## NeutralCommand (zero physical control) rather than a synthesized stance.
+  if seat >= 0 and seat < engine.haveStance.len:
+    engine.haveStance[seat] = false
