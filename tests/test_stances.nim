@@ -1,93 +1,132 @@
-## Tolerant parsing and repair, and the RUNE discipline.
+## Strict canonical stance parsing and the RUNE discipline.
 
 import std/[json, strutils, unicode, unittest]
 import cabinet/[sim, stances]
-import helpers
 
 const
   NoneOut: array[CabinetCount, bool] = [false, false, false, false]
   BothLive = @[true, true]
 
 proc parse(text: string, myCabinet = 2, cabinetOut = NoneOut,
-    live = BothLive, catchEnabled = true,
-    previous = defaultStance(), havePrevious = false): CabinetStance =
+    live = BothLive, catchEnabled = true): CabinetStance =
   parseCabinetStance(extractJsonObject(text), myCabinet, cabinetOut, live,
-    catchEnabled, previous, havePrevious)
+    catchEnabled)
+
+proc validJson(overrides: openArray[(string, JsonNode)] = @[]): string =
+  var node = %*{
+    "stance": "guard",
+    "target_ball": "any",
+    "aim_at": "none",
+    "post": 0.0,
+    "lead_ticks": 12,
+    "aggression": 0.8,
+    "note": "",
+    "say": ""
+  }
+  for (k, v) in overrides:
+    node[k] = v
+  $node
 
 suite "stances":
-  test "prose-prefixed and fenced JSON both parse":
-    let a = parse("""Sure! Here is my stance:
-```json
-{"stance":"aim","aim_at":"BLUE","note":"take the shot"}
-```
-Hope that helps.""")
-    check a.stance == stAim
-    check a.aimAt == 1
-    check a.note == "take the shot"
-    let b = parse("""I think {"stance":"camp","post":12.5} is right""")
-    check b.stance == stCamp
-    check b.postUu == 125_000
+  test "raw JSON and a standard outer Markdown JSON fence both parse":
+    let raw = parse(validJson([("stance", %"aim"), ("aim_at", %"BLUE"),
+      ("note", %"take the shot")]))
+    check raw.stance == stAim
+    check raw.aimAt == 1
+    check raw.note == "take the shot"
 
-  test "an integer percentage aggression is divided by 100":
-    check parse("""{"aggression":80,"stance":"guard"}""").aggression255 == 204
-    check parse("""{"aggression":"0.5","stance":"guard"}""").aggression255 == 128
-    check parse("""{"aggression":1,"stance":"guard"}""").aggression255 == 255
+    let fenced = parse("```json\n" & validJson([("stance", %"camp"),
+      ("post", %12.5)]) & "\n```")
+    check fenced.stance == stCamp
+    check fenced.postUu == 125_000
 
-  test "an out-of-range post given in percent is rescaled, then clamped":
-    check parse("""{"post":80,"stance":"camp"}""").postUu == 344_000
-    check parse("""{"post":-999,"stance":"camp"}""").postUu == -PaddleTravelHalf
-    check parse("""{"post":43,"stance":"camp"}""").postUu == PaddleTravelHalf
+    let plainFence = parse("```\n" & validJson([("stance", %"chase"),
+      ("aim_at", %"RED")]) & "\n```")
+    check plainFence.stance == stChase
+    check plainFence.aimAt == 0
 
-  test "aim_at is accepted inside prose and rejected when it is me or out":
-    check parse("""{"aim_at":"the red cabinet"}""").aimAt == 0
-    check parse("""{"aim_at":"red"}""").aimAt == 0
-    check parse("""{"aim_at":"GREEN"}""", myCabinet = 2).aimAt == -1
+  test "prose-prefixed or suffixed replies are rejected":
+    expect StanceError:
+      discard parse("Sure! Here is my stance:\n```json\n" & validJson() & "\n```")
+    expect StanceError:
+      discard parse("```json\n" & validJson() & "\n```\nGood luck!")
+    expect StanceError:
+      discard parse("I think " & validJson() & " is right")
+
+  test "required fields must all be present and unknown aliases are rejected":
+    for missing in ["stance", "target_ball", "aim_at", "post", "lead_ticks", "aggression"]:
+      var node = parseJson(validJson())
+      node.delete(missing)
+      expect StanceError:
+        discard parse($node)
+    # optional note/say may be omitted
+    var minimal = parseJson(validJson())
+    minimal.delete("note")
+    minimal.delete("say")
+    check parse($minimal).stance == stGuard
+
+    for alias in [("intent", %"guard"), ("targetBall", %"B1"),
+                  ("aimAt", %"BLUE"), ("leadTicks", %12)]:
+      var node = parseJson(validJson())
+      node[alias[0]] = alias[1]
+      expect StanceError:
+        discard parse($node)
+
+  test "percentage, string, boolean, and out-of-range numeric coercions are rejected":
+    check parse(validJson([("aggression", %0.5)])).aggression255 == 128
+    check parse(validJson([("aggression", %1)])).aggression255 == 255
+    check parse(validJson([("post", %43)])).postUu == PaddleTravelHalf
+    check parse(validJson([("post", %(-43.0))])).postUu == -PaddleTravelHalf
+    for bad in [
+      validJson([("aggression", %80)]),
+      validJson([("aggression", %(-0.1))]),
+      validJson([("aggression", %"0.5")]),
+      validJson([("aggression", %true)]),
+      validJson([("post", %80)]),
+      validJson([("post", %(-999))]),
+      validJson([("post", %"12.5")]),
+      validJson([("lead_ticks", %49)]),
+      validJson([("lead_ticks", %(-1))]),
+      validJson([("lead_ticks", %12.5)]),
+      validJson([("lead_ticks", %"12")])
+    ]:
+      expect StanceError:
+        discard parse(bad)
+
+  test "aim_at requires an exact alive rival alias or none":
+    check parse(validJson([("aim_at", %"RED")])).aimAt == 0
+    check parse(validJson([("aim_at", %"none")])).aimAt == -1
     var eliminated = NoneOut
     eliminated[1] = true
-    check parse("""{"aim_at":"BLUE"}""", cabinetOut = eliminated).aimAt == -1
-    check parse("""{"aim_at":"nobody"}""").aimAt == -1
-    check parse("""{"aim_at":"RED and BLUE"}""").aimAt == -1
+    for bad in ["the red cabinet", "red", "nobody", "null", "RED and BLUE"]:
+      expect StanceError:
+        discard parse(validJson([("aim_at", %bad)]))
+    expect StanceError:
+      discard parse(validJson([("aim_at", %"GREEN")]), myCabinet = 2)
+    expect StanceError:
+      discard parse(validJson([("aim_at", %"BLUE")]), cabinetOut = eliminated)
 
-  test "target_ball is accepted as ball 2 / 2 / B2, and rejected when not live":
-    check parse("""{"target_ball":"ball 2"}""").targetBall == 1
-    check parse("""{"target_ball":"2"}""").targetBall == 1
-    check parse("""{"target_ball":"B1"}""").targetBall == 0
-    check parse("""{"target_ball":"any"}""").targetBall == -1
-    check parse("""{"target_ball":"B3"}""").targetBall == -1
-    check parse("""{"target_ball":"B2"}""", live = @[true, false]).targetBall == -1
+  test "target_ball requires canonical B1..BN (live) or any":
+    check parse(validJson([("target_ball", %"B1")])).targetBall == 0
+    check parse(validJson([("target_ball", %"B2")])).targetBall == 1
+    check parse(validJson([("target_ball", %"any")])).targetBall == -1
+    for bad in [%"ball 2", %"2", %2, %"b2", %"all", %"none", %"B3"]:
+      expect StanceError:
+        discard parse(validJson([("target_ball", bad)]))
+    expect StanceError:
+      discard parse(validJson([("target_ball", %"B2")]), live = @[true, false])
 
-  test "every stance synonym lands, and an unknown stance keeps last turn's":
-    check parse("""{"stance":"defend"}""").stance == stGuard
-    check parse("""{"stance":"shoot"}""").stance == stAim
-    check parse("""{"stance":"attack"}""").stance == stAim
-    check parse("""{"stance":"hold"}""").stance == stCamp
-    check parse("""{"stance":"sit"}""").stance == stCamp
-    check parse("""{"stance":"grab"}""").stance == stCatch
-    check parse("""{"stance":"rush"}""").stance == stChase
-    check parse("""{"stance":" AIM "}""").stance == stAim
-    var previous = defaultStance()
-    previous.stance = stChase
-    check parse("""{"stance":"waltz","note":"?"}""",
-      previous = previous, havePrevious = true).stance == stChase
-    check parse("""{"stance":"waltz","note":"?"}""").stance == stGuard
-
-  test "catch in a ROM without catchEnabled is repaired to guard":
-    check parse("""{"stance":"catch"}""", catchEnabled = false).stance == stGuard
-    check parse("""{"stance":"catch"}""", catchEnabled = true).stance == stCatch
-
-  test "NaN and absent fields fall back to the documented defaults":
-    let stance = parse("""{"stance":"guard","post":null,"lead_ticks":"nope"}""")
-    check stance.postUu == 0
-    check stance.leadTicks == DefaultLeadTicks
-    check stance.aggression255 == DefaultAggression255
-    var previous = defaultStance()
-    previous.postUu = 90_000
-    check parse("""{"stance":"guard"}""",
-      previous = previous, havePrevious = true).postUu == 90_000
+  test "stance synonyms, case variants, and disabled catch are rejected":
+    for bad in ["defend", "shoot", "attack", "hold", "sit", "grab", "rush", " AIM ", "guard ", "waltz"]:
+      expect StanceError:
+        discard parse(validJson([("stance", %bad)]))
+    check parse(validJson([("stance", %"catch")]), catchEnabled = true).stance == stCatch
+    expect StanceError:
+      discard parse(validJson([("stance", %"catch")]), catchEnabled = false)
 
   test "a 300-character note is cut to 160 RUNES":
     let long = "x".repeat(300)
-    let stance = parse("""{"note":"""" & long & """","stance":"guard"}""")
+    let stance = parse(validJson([("note", %long)]))
     check stance.note.runeLen == MaxNoteRunes
     check stance.note.validateUtf8() == -1
 
@@ -117,7 +156,7 @@ Hope that helps.""")
     check parsed["k"].getStr == "stance"
     check parsed["say"].getStr.runeLen <= MaxSayRunes
 
-  test "a reply with no usable field raises, which is what the retry is for":
+  test "a reply with no valid stance object raises":
     expect StanceError:
       discard parse("""{"unrelated":true}""")
     expect StanceError:

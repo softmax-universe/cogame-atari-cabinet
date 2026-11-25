@@ -35,7 +35,7 @@ suite "ordinary numeric stance codec":
             let native = game.baselineStance(cabinet, blBulwark, turn)
             let heads = encodeStance(native)
             let decoded = parseCabinetStance(decodeActions(view, heads), cabinet,
-              cabinetOut, ballLive, config.catchEnabled, defaultStance(), false)
+              cabinetOut, ballLive, config.catchEnabled)
             check decoded.stance == native.stance
             check decoded.targetBall == native.targetBall
             check decoded.aimAt == native.aimAt
@@ -49,7 +49,7 @@ suite "ordinary numeric stance codec":
                 var altered = heads.copy()
                 altered.elems[head] = %choice
                 let candidate = parseCabinetStance(decodeActions(view, altered), cabinet,
-                  cabinetOut, ballLive, config.catchEnabled, defaultStance(), false)
+                  cabinetOut, ballLive, config.catchEnabled)
                 check candidate.validateStance(cabinet, cabinetOut, ballLive).len == 0
                 inc checked
               offset += size

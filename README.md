@@ -31,9 +31,10 @@ private observation. The player returns a complete stance over
 `atari-cabinet.player.v2`. Scripted, prompt, and trained policies use this same
 interface. Prompts and inference credentials stay in the player process.
 
-The game validates orders and uses a native bulwark fallback on invalid,
-missing, or disconnected players. A deterministic autopilot compiles accepted
-stances into recorded command bytes at 24 Hz. The replay needs no model calls.
+The game strictly validates canonical orders and uses a neutral hold fallback on
+invalid, missing, or disconnected players. A deterministic autopilot compiles
+accepted stances into recorded command bytes at 24 Hz. The replay needs no model
+calls.
 
 ```bash
 coworld upload-policy coworld-atari-cabinet:latest \
@@ -49,7 +50,7 @@ prompt policy and a scripted policy use the same observation and order protocol:
 | env | seat |
 |---|---|
 | `PLAYER_PROMPT=<strategy>` | an LLM seat |
-| `PLAYER_SCRIPTED=bulwark` | the certification player, the per-turn fallback and the default |
+| `PLAYER_SCRIPTED=bulwark` | the certification player and default scripted baseline |
 | `PLAYER_SCRIPTED=spinner` | the chaotic filler: chases everything, never camps |
 
 ## Watching it

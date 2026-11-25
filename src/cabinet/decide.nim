@@ -246,96 +246,28 @@ proc resultRecord*(sim: SimServer): string =
 #  The turn
 # ---------------------------------------------------------------------------
 
-proc holdFallbackStance*(): CabinetStance =
-  ## Neutral guard-at-center fallback for scored LLM failures (never `bulwark`).
-  CabinetStance(
-    stance: stGuard,
-    targetBall: -1,
-    aimAt: -1,
-    postUu: 0'i32,
-    leadTicks: 0,
-    aggression255: 0,
-    source: ssFallback
-  )
-
-proc bulwarkFor*(
-  engine: DecisionEngine, sim: SimServer, seat: int
-): CabinetStance =
-  ## The published `bulwark` stance — the per-turn fallback for any seat.
-  sim.bulwarkStance(sim.cabinetOfSeat(seat), engine.params)
-
-proc repairStance*(
-  engine: DecisionEngine, sim: SimServer, seat: int,
-  stance: var CabinetStance
-) =
-  ## A field the model left out keeps LAST turn's value, else `bulwark`'s. The
-  ## parser already defaults each field; this is the second half of the rule —
-  ## a policy that named three fields meant the fourth to carry on.
-  ##
-  ## The repair is PER FIELD. Discarding a whole stance because one field was
-  ## illegal threw away four legal decisions to fix one: a reply that named a
-  ## ball that had just been conceded lost its stance, its post, its lead and
-  ## its aggression too, and the seat played bulwark for the turn while the
-  ## record said otherwise.
-  let cabinet = sim.cabinetOfSeat(seat)
-  var
-    cabinetOut: array[CabinetCount, bool]
-    ballLive: seq[bool]
-  for k in 0 ..< CabinetCount:
-    cabinetOut[k] = sim.cabinets[k].isOut
-  for ball in sim.balls:
-    ballLive.add(ball.state == bsLive)
-  if stance.validateStance(cabinet, cabinetOut, ballLive).len == 0:
-    return
-  let fallback = holdFallbackStance()
-  # The caps and the bounds are CLAMPED, which is what the parser does with an
-  # out-of-range number and what keeps "post hard right" meaning that…
-  stance.note = stance.note.truncateRunes(MaxNoteRunes)
-  stance.say = stance.say.truncateRunes(MaxSayRunes)
-  stance.postUu = clamp(stance.postUu, -PaddleTravelHalf, PaddleTravelHalf)
-  stance.leadTicks = clamp(stance.leadTicks, 0, MaxLeadTicks)
-  stance.aggression255 = clamp(stance.aggression255, 0, 255)
-  # …while a REFERENCE to something that is not there any more (a ball that is
-  # not live, my own cabinet, a cabinet that is out) has no legal
-  # interpretation, so that field alone takes bulwark's.
-  if stance.targetBall >= 0 and
-      (stance.targetBall >= ballLive.len or not ballLive[stance.targetBall]):
-    stance.targetBall = fallback.targetBall
-  if stance.aimAt >= 0 and
-      (stance.aimAt == cabinet or stance.aimAt >= CabinetCount or
-       cabinetOut[stance.aimAt]):
-    stance.aimAt = fallback.aimAt
-  # validateStance is the authority on legality and this repair enumerates its
-  # rules by hand; if the two ever drift, the seat still plays something legal.
-  if stance.validateStance(cabinet, cabinetOut, ballLive).len > 0:
-    var repaired = fallback
-    repaired.note = stance.note
-    repaired.say = stance.say
-    repaired.source = stance.source
-    repaired.latencyMs = stance.latencyMs
-    stance = repaired
-
 proc acceptOrders*(
   engine: var DecisionEngine, sim: SimServer, seat, turnIndex: int,
   text: string
 ): bool =
-  ## Reject stale/malformed orders; the common deadline supplies fallback.
+  ## Reject stale, malformed, or illegal orders; the common deadline supplies fallback.
   try:
     let node = parseJson(text)
     if node.kind != JObject or node{"type"}.getStr() != "orders" or
-        node{"turn"}.getInt(-1) != turnIndex:
+        node{"turn"}.getInt(-1) != turnIndex or not node.hasKey("action"):
       return false
+    let cabinet = sim.cabinetOfSeat(seat)
     var cabinetOut: array[CabinetCount, bool]
-    for cabinet in 0 ..< CabinetCount:
-      cabinetOut[cabinet] = sim.cabinets[cabinet].isOut
+    for k in 0 ..< CabinetCount:
+      cabinetOut[k] = sim.cabinets[k].isOut
     var live: seq[bool]
     for ball in sim.balls:
       live.add(ball.state == bsLive)
     var stance = parseCabinetStance(
-      node["action"], sim.cabinetOfSeat(seat), cabinetOut, live,
-      sim.config.catchEnabled, engine.stances[seat], engine.haveStance[seat])
+      node["action"], cabinet, cabinetOut, live, sim.config.catchEnabled)
+    if stance.validateStance(cabinet, cabinetOut, live).len > 0:
+      return false
     stance.source = if node{"source"}.getStr() == "fallback": ssFallback else: ssExternal
-    engine.repairStance(sim, seat, stance)
     engine.stances[seat] = stance
     engine.haveStance[seat] = true
     result = true

@@ -48,6 +48,8 @@ proc currentDecision(): JsonNode =
     ],
     "action_schema": {
       "type": "object",
+      "additionalProperties": false,
+      "required": ["stance", "target_ball", "aim_at", "post", "lead_ticks", "aggression"],
       "properties": {
         "stance": {"enum": ["guard", "aim", "camp", "catch", "chase"]},
         "target_ball": {"type": "string"},
@@ -121,11 +123,12 @@ proc step(command: JsonNode): JsonNode =
   var stance: CabinetStance
   try:
     stance = parseCabinetStance(extractJsonObject(command["response"].getStr()),
-      cabinet, cabinetOut, ballLive, game.config.catchEnabled,
-      engine.stances[actingSeat], engine.haveStance[actingSeat])
+      cabinet, cabinetOut, ballLive, game.config.catchEnabled)
   except JsonParsingError, StanceError:
-    return %*{"kind": "rejected", "reason": "reply must be a usable JSON stance"}
-  engine.repairStance(game, actingSeat, stance)
+    return %*{"kind": "rejected", "reason": getCurrentExceptionMsg()}
+  let violation = stance.validateStance(cabinet, cabinetOut, ballLive)
+  if violation.len > 0:
+    return %*{"kind": "rejected", "reason": violation}
   engine.stances[actingSeat] = stance
   engine.haveStance[actingSeat] = true
   let action = stanceJson(stance)

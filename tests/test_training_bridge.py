@@ -45,6 +45,24 @@ with tempfile.TemporaryDirectory() as directory:
                     invalid = request(process, {"kind": "step", "decision_id": decisions,
                                                 "response": "not JSON"})
                     assert invalid["kind"] == "rejected"
+                    alias_reply = request(
+                        process,
+                        {
+                            "kind": "step",
+                            "decision_id": decisions,
+                            "response": json.dumps(
+                                {
+                                    "stance": "defend",
+                                    "target_ball": "any",
+                                    "aim_at": "none",
+                                    "post": 0.0,
+                                    "lead_ticks": 12,
+                                    "aggression": 0.8,
+                                }
+                            ),
+                        },
+                    )
+                    assert alias_reply["kind"] == "rejected"
                     encoding = request(process, {"kind": "encode"})
                     assert encoding["decision_id"] == decisions
                     assert len(encoding["values"]) == 115

@@ -33,10 +33,11 @@ frame containing the complete stance:
  "aim_at":"none","post":0,"lead_ticks":12,"aggression":0.8,"note":"","say":""}}
 ```
 
-The game rejects stale or malformed replies and accepts the first valid order
-per seat. All seats share one monotonic `turnBudgetMs` deadline. Disconnected
-seats immediately use native bulwark fallback; missing orders use it at the
-deadline. The game retains validation, repair, scoring, results, and replay.
+The game rejects stale, malformed, or illegal replies and accepts the first
+valid order per seat. All seats share one monotonic `turnBudgetMs` deadline.
+Disconnected seats immediately use a neutral hold fallback; missing or rejected
+orders use it at the deadline. The game retains validation, scoring, results,
+and replay.
 
 The per-seat frame carries the **whole board**: the arena, all four mouths
 (open or welded), every paddle, every brick and every ball with its trail.
@@ -96,24 +97,21 @@ direction; every real player name; and any host or wall-clock fact.
  "post": 0.0, "lead_ticks": 12, "aggression": 0.8, "say": "BLUE first"}
 ```
 
-| field | cap / legal values | repair when violated |
+| field | cap / legal values | validation |
 |---|---|---|
-| `note` | ≤ 160 runes | truncated to 160 runes |
-| `stance` | `guard, aim, camp, catch, chase` | unrecognised → last turn's, else `guard`; `catch` without `catchEnabled` → `guard` |
-| `target_ball` | ≤ 4 runes, `B1`…`B<ballCount>` or `any` | an id outside the set, or a ball not currently live → `any` |
-| `aim_at` | ≤ 8 runes, a colour alias or `none`; never my own, never an out cabinet | unrecognised / missing / self / out → `none` (the autopilot then behaves as `guard`) |
-| `post` | finite, clamped ±43.0, quantised to µu | non-finite / missing → last turn's, else `0.0`; a value beyond ±43 is read as a percent and rescaled |
-| `lead_ticks` | integer, clamped 0..48 | non-finite / missing → `12` |
-| `aggression` | finite, clamped 0..1, quantised to 0..255 | a value above 1 is divided by 100; missing → `0.8` |
-| `say` | ≤ 48 runes | truncated to 48 runes, then the printable-ASCII shout sanitiser (which strips a leading `{`) |
+| `note` | optional string, ≤ 160 runes | truncated to 160 runes; non-string rejected |
+| `stance` | required string: `guard`, `aim`, `camp`, `catch`, `chase` | exact canonical enum only; `catch` rejected unless `catch_enabled` is true |
+| `target_ball` | required string: `B1`…`B<ballCount>` (currently live) or `any` | non-live or out-of-range ball rejected |
+| `aim_at` | required string: alive rival alias (`RED`, `BLUE`, `GREEN`, `YELLOW`) or `none` | self, eliminated rival, or unknown alias rejected |
+| `post` | required finite number, `-43.0..43.0`, quantised to µu | out-of-range or non-number rejected |
+| `lead_ticks` | required integer, `0..48` | out-of-range or non-integer rejected |
+| `aggression` | required finite number, `0.0..1.0`, quantised to `0..255` | out-of-range or non-number rejected |
+| `say` | optional string, ≤ 48 runes | truncated to 48 runes, then printable-ASCII shout sanitiser (strips `{`/`}`); non-string rejected |
 
-Parsing is deliberately tolerant: markdown fences are stripped, the outermost
-balanced `{…}` is taken (so prose before or after the object is fine), numeric
-strings are accepted, `stance`/`target_ball`/`aim_at` are matched
-case-insensitively and inside prose (`"the red cabinet"`, `"ball 2"`), and the
-documented synonyms (`defend`→`guard`, `shoot`/`attack`→`aim`,
-`hold`/`sit`→`camp`, `grab`→`catch`, `rush`→`chase`) are accepted. Only when no
-object with at least one usable field can be recovered is the order rejected; the game uses `bulwark` if no valid order arrives
+Replies must be either a raw JSON object or a single outer `` ```json ... ``` ``
+Markdown fence with no surrounding prose. Unknown fields, camelCase or synonym
+aliases, stringified numbers, percentage rescaling, and illegal targets are
+rejected; the game applies a neutral hold fallback if no valid order arrives
 before the common deadline.
 
 **Every recorded string is truncated on RUNE boundaries**, never bytes: a

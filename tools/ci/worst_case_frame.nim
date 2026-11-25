@@ -45,7 +45,7 @@ proc worstCaseReply*(alias, stance, aimAt: string): string =
   # 47-rune remark and quietly weaken it.
   let say = alias & " takes the next shot and holds the near-corner-rebound" &
     "-lane while the wall holds"
-  "Here is my move for this turn.\n\n```json\n" & $(%*{
+  "```json\n" & $(%*{
     "note": note,
     "stance": stance,
     "target_ball": "any",
@@ -54,7 +54,7 @@ proc worstCaseReply*(alias, stance, aimAt: string): string =
     "lead_ticks": 12,
     "aggression": 0.8,
     "say": say
-  }) & "\n```\nGood luck.\n"
+  }) & "\n```"
 
 proc worstCaseFrame*(
   rom = "warlords", seed = 20260826
@@ -102,7 +102,7 @@ proc worstCaseFrame*(
       reply = worstCaseReply(alias, WorstCaseStances[seat], aimAt)
     var stance = parseCabinetStance(
       extractJsonObject(reply), cabinet, cabinetOut, live,
-      config.catchEnabled, defaultStance(), false)
+      config.catchEnabled)
     stance.source = ssExternal
     stance.latencyMs = 1234
     game.applyStanceRecord(

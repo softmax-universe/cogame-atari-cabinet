@@ -79,9 +79,11 @@ paddle line, gets the bar there, and picks the contact offset that aims your
 return where you told it to. You choose WHAT to defend and WHOM to shoot.
 """
 
-const OutputFormat = """Reply with a single JSON object and NOTHING else. Your reply MUST begin with '{'.
+const OutputFormat = """Reply with a single JSON object and NOTHING else (raw JSON or a single ```json ... ``` fence).
+Required fields: "stance", "target_ball", "aim_at", "post", "lead_ticks", "aggression".
+Optional fields: "note", "say". Use exact canonical field names and values.
 Schema:
-{"note":"<=160 chars, your reasoning",
+{"note":"<=160 chars, your reasoning (optional)",
  "stance":"guard"|"aim"|"camp"|"catch"|"chase",
    // guard : intercept the ball named in "target_ball" (or, if it will not
    //         reach you, the ball that reaches you soonest) and return it
@@ -97,17 +99,19 @@ Schema:
    //         the most aggressive aim at "aim_at" available. Maximum damage,
    //         and it is how you end up out of position for the second ball.
    // catch : as "guard", but GRIP the ball on contact and hold it up to 2 s,
-   //         then release it aimed at "aim_at". Only the WARLORDS rom allows
-   //         this; elsewhere it behaves as "guard". While you hold a ball you
-   //         cannot defend the other one.
- "target_ball":"B1"|"B2"|"any",
- "aim_at":"RED"|"BLUE"|"GREEN"|"YELLOW"|"none",   // never yourself
+   //         then release it aimed at "aim_at". Only valid when
+   //         rules.catch_enabled is true (WARLORDS); rejected in other ROMs.
+   //         While you hold a ball you cannot defend the other one.
+ "target_ball":"B1"|"B2"|"any",   // must name a currently live ball, or "any"
+ "aim_at":"RED"|"BLUE"|"GREEN"|"YELLOW"|"none",   // alive rival only, never yourself or out
  "post":-43.0..43.0,        // where "camp" idles, in along-units on your side
                             // (0 = the centre of your mouth)
- "lead_ticks":0..48,        // how far ahead the autopilot commits the bar
+ "lead_ticks":0..48,        // integer; how far ahead the autopilot commits the bar
                             // (24 ticks = 1 second)
  "aggression":0.0..1.0,     // 0 = never leave the post, 1 = chase everything
- "say":"<=48 chars"}        // spectators only; no cabinet ever sees it
+ "say":"<=48 chars"}        // optional; spectators only, no cabinet ever sees it
+Example:
+{"stance":"guard","target_ball":"any","aim_at":"none","post":0.0,"lead_ticks":12,"aggression":0.8,"note":"defend center","say":""}
 """
 
 const CanonicalSystemPrompt* = Introduction & Mechanics & Visibility & Cadence & OutputFormat

@@ -517,7 +517,7 @@ proc runServerLoop*(
             "player slot " & $stuckSlot & " never joined the lobby within " &
             $config.lobbyJoinTimeoutTicks & " lobby ticks (~" &
             $(config.lobbyJoinTimeoutTicks div TargetFps) &
-            "s); its cabinet plays the bulwark baseline")
+            "s); its cabinet uses neutral hold fallback")
           forceStart = true
 
         if not replayLoaded:
@@ -718,7 +718,7 @@ proc runServerLoop*(
                       let nativeText = nativeReplyText(receipt.rawResponse.getStr())
                       let parsed = parseCabinetStance(extractJsonObject(nativeText),
                         game.cabinetOfSeat(seat), cabinetOut, live,
-                        game.config.catchEnabled, defaultStance(), false)
+                        game.config.catchEnabled)
                       receipt.response = %nativeText
                       receipt.parsedAction = parsed.stanceActionNode()
                       if receipt.parsedAction != engine.stances[seat].stanceActionNode():
@@ -773,7 +773,7 @@ proc runServerLoop*(
                 elif selected[seat].isSome: asAccepted else: asRejected
               trajectory.recordDecision($turnIndex & "-" & $seat, $seat,
                 observations[seat], attempts[seat], selected[seat], action, status,
-                fallbackOrigin = (if status == asFallback: some(if playerFallback[seat]: "player_scripted" else: "engine_scripted") else: none(string)))
+                fallbackOrigin = (if status == asFallback: some(if playerFallback[seat]: "player_fallback" else: "engine_fallback") else: none(string)))
             game.emitEvent(StanceSet, cabinet = game.cabinetOfSeat(seat),
               amount = turnIndex, detail = $stance.stance)
       # Compile ONE byte per cabinet, in CABINET INDEX ORDER, every tick, and
@@ -786,7 +786,7 @@ proc runServerLoop*(
           if engine.haveStance.len > seat and engine.haveStance[seat]:
             engine.stances[seat]
           else:
-            game.bulwarkStance(cabinet, engine.params)
+            holdFallbackStance()
         commands[seat] = game.paddleCommand(cabinet, stance)
       for seat in 0 ..< CabinetCount:
         replayWriter.writeInputMaskChange(

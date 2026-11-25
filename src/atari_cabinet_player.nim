@@ -26,18 +26,6 @@ proc registrationBlob(kind, scripted, policy: string): string =
     node["scripted"] = newJNull()
   blobFromSpriteChat($node)
 
-proc holdFallbackStance(): CabinetStance =
-  ## Neutral hold stance for scored LLM failures (never substitutes `bulwark`).
-  CabinetStance(
-    stance: stGuard,
-    targetBall: -1,
-    aimAt: -1,
-    postUu: 0'i32,
-    leadTicks: 0,
-    aggression255: 0,
-    source: ssFallback
-  )
-
 proc readyBlob(): string =
   ## Acknowledge binary viewer frames; standing orders use the Text channel.
   result = newString(1)
@@ -139,7 +127,7 @@ when isMainModule:
           evidence.response = %text
           source = "model"
           stance = parseCabinetStance(extractJsonObject(text), cabinet,
-            cabinetOut, live, view["rules"]["catch_enabled"].getBool(), stance, false)
+            cabinetOut, live, view["rules"]["catch_enabled"].getBool())
         except CatchableError as error:
           echo "cabinet player: provider failed: ", error.msg
           stance = holdFallbackStance()
