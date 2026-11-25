@@ -111,7 +111,7 @@ when isMainModule:
         let reason = "LLM provider is unavailable"
         evidence.rejectionReason = some(reason)
         return $(%*{"type": "orders_failed", "turn": decision["turn"],
-          "reason": reason, "training_attempt": attemptEvidenceJson(evidence)})
+          "kind": "episode_inconclusive", "reason": reason, "training_attempt": attemptEvidenceJson(evidence)})
       client.throttled = false
       # The player performs inference. All seats run concurrently in their
       # own containers; the game owns their shared response deadline.
@@ -130,8 +130,10 @@ when isMainModule:
       evidence.receivedEvidence(responses[0].response)
       socket.send($( %*{"type": "attempt_response", "turn": decision["turn"],
         "training_attempt": attemptEvidenceJson(evidence)}), TextMessage)
+      var failureKind = "episode_inconclusive"
       try:
         let text = client.textOf(responses[0].response, responses[0].error, request.url)
+        failureKind = "player_error"
         evidence.response = %text
         let stance = parseCabinetStance(extractJsonObject(text), cabinet,
           cabinetOut, live, view["rules"]["catch_enabled"].getBool())
@@ -142,7 +144,7 @@ when isMainModule:
         echo "cabinet player: provider/parse failed: ", error.msg
         evidence.rejectionReason = some(error.msg)
         return $(%*{"type": "orders_failed", "turn": decision["turn"],
-          "reason": error.msg, "training_attempt": attemptEvidenceJson(evidence)})
+          "kind": failureKind, "reason": error.msg, "training_attempt": attemptEvidenceJson(evidence)})
     let stance = view.baselineStance(scriptedBaseline)
     let action = stance.stanceActionNode()
     $(%*{"type": "orders", "turn": decision["turn"], "action": action,

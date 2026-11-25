@@ -12,6 +12,8 @@ when defined(posix):
   from std/posix import SHUT_RDWR, shutdown
 
 type
+  CabinetPlayerFailure* = object of CatchableError
+
   WebSocketSocketFields = object
     server: Server
     clientSocket: SocketHandle
@@ -342,18 +344,12 @@ proc parseRegistration*(
     result.scripted = node{"scripted"}.getStr()
   result.policy = node{"policy"}.getStr()
 
-proc declarePlayerFailure(slot: int, message: string) =
-  ## The game-declared terminal player failure the platform runner polls for,
-  ## so a lobby no-show is charged to the seat that caused it instead of
-  ## poisoning the whole episode unattributed. Best-effort: outside the
-  ## platform (env unset) this is a no-op.
-  try:
-    writeCogameEnv(
-      "COGAME_PLAYER_FAILURE_URI",
-      $(%*{"failed_policy_index": slot, "message": message}),
-      "application/json")
-  except CatchableError as e:
-    echo "player-failure declaration failed: ", e.msg
+proc failPlayer(slot: int, kind, message: string, trajectory: DecisionTrajectory) =
+  let failure = %*{"failed_policy_index": slot, "kind": kind, "message": message}
+  trajectory.finishCapture(failure)
+  writeCogameEnv("COGAME_PLAYER_FAILURE_URI", $failure, "application/json")
+  echo "cabinet: unscored failure on seat ", slot, ": ", message
+  raise newException(CabinetPlayerFailure, message)
 
 proc runFrameLimiter(
   previousTick: var MonoTime, fastMode: bool, sockets: openArray[WebSocket]
@@ -455,13 +451,15 @@ proc runServerLoop*(
   createThread(serverThread, serverThreadProc,
     ServerThreadArgs(server: serverPtr, address: host, port: port))
   httpServer.waitUntilReady()
+  defer:
+    httpServer.close()
+    joinThread(serverThread)
   echo "atari-cabinet listening on ", host, ":", port
 
   let trajectory = if replayLoaded: nil else: beginCapture("atari-cabinet", "atari-cabinet-" & $config.seed)
   var
     engine = if replayLoaded: DecisionEngine() else: initDecisionEngine(game)
     seatsSeated = false
-    forceStart = false
     lastTurnKey = -1
     episodeStart = getMonoTime()
     deadlineHit = false
@@ -509,16 +507,8 @@ proc runServerLoop*(
         # only ever saw budget-1 and then a phase that had already moved on --
         # the no-show was never actually declared (r1-23).
         if not replayLoaded and not seatsSeated and game.lobbyBudgetSpent():
-          # A seat that never connects does NOT end the episode. Report the
-          # no-show (lowest missing slot only), then start anyway: that
-          # cabinet plays the published `bulwark` baseline for the whole run.
           let stuckSlot = game.nextPlayerSlot()
-          declarePlayerFailure(stuckSlot,
-            "player slot " & $stuckSlot & " never joined the lobby within " &
-            $config.lobbyJoinTimeoutTicks & " lobby ticks (~" &
-            $(config.lobbyJoinTimeoutTicks div TargetFps) &
-            "s); its cabinet receives no input (neutral control)")
-          forceStart = true
+          failPlayer(stuckSlot, "episode_inconclusive", "player never joined the lobby", trajectory)
 
         if not replayLoaded:
           var pending: seq[WebSocket]
@@ -563,7 +553,7 @@ proc runServerLoop*(
                 replayWriter.lastMasks.add(NeutralCommand)
               progressed = true
           if not seatsSeated and game.phase == Lobby and
-              (game.players.len >= config.numAgents or forceStart):
+              (game.players.len >= config.numAgents):
             while replayWriter.lastMasks.len < CabinetCount:
               replayWriter.lastMasks.add(NeutralCommand)
             seatsSeated = true
@@ -651,7 +641,9 @@ proc runServerLoop*(
             turnIndex != lastTurnKey:
           lastTurnKey = turnIndex
           inc turnsRun
-          var waiting, connected, recordedFailure: array[CabinetCount, bool]
+          var waiting, connected: array[CabinetCount, bool]
+          var failures: array[CabinetCount, string]
+          var failureKinds: array[CabinetCount, string]
           var observations: array[CabinetCount, JsonNode]
           var attempts: array[CabinetCount, seq[DecisionAttempt]]
           var selected: array[CabinetCount, Option[string]]
@@ -688,13 +680,8 @@ proc runServerLoop*(
                     continue
                   if websocket in appState.closedSockets:
                     waiting[seat] = false
-                    engine.clearStance(seat)
-                    if not recordedFailure[seat]:
-                      recordedFailure[seat] = true
-                      let fb = fallbackRecord(turnIndex, seat, 0, "disconnect",
-                        "player disconnected")
-                      replayWriter.writeChat(tickTime(game.tickCount), seat, fb)
-                      game.applyStanceRecord(fb)
+                    failures[seat] = "player disconnected"
+                    failureKinds[seat] = "episode_inconclusive"
                   for text in appState.orders.getOrDefault(websocket):
                     pending.add((seat, text))
                   appState.orders.del(websocket)
@@ -709,6 +696,8 @@ proc runServerLoop*(
                     probe{"turn"}.getInt(-1) == turnIndex:
                   isFailureNotice = true
                   failureReason = probe{"reason"}.getStr("player decision failed")
+                  failureKinds[seat] = if probe{"kind"}.getStr() == "episode_inconclusive":
+                    "episode_inconclusive" else: "player_error"
               except CatchableError:
                 discard
               let accepted =
@@ -770,25 +759,21 @@ proc runServerLoop*(
                 engine.stances[seat].latencyMs = (getMonoTime() - started).inMilliseconds.int
               elif isFailureNotice:
                 waiting[seat] = false
-                engine.clearStance(seat)
-                if not recordedFailure[seat]:
-                  recordedFailure[seat] = true
-                  let fb = fallbackRecord(turnIndex, seat, 0, "failed", failureReason)
-                  replayWriter.writeChat(tickTime(game.tickCount), seat, fb)
-                  game.applyStanceRecord(fb)
+                failures[seat] = failureReason
             if waiting.contains(true):
               sleep(1)
           for seat in 0 ..< CabinetCount:
             if game.cabinets[game.cabinetOfSeat(seat)].isOut:
               continue
             if waiting[seat] or not connected[seat]:
-              engine.clearStance(seat)
-              if not recordedFailure[seat]:
-                recordedFailure[seat] = true
-                let fb = fallbackRecord(turnIndex, seat, 0, "timeout",
-                  "no valid player orders before deadline")
-                replayWriter.writeChat(tickTime(game.tickCount), seat, fb)
-                game.applyStanceRecord(fb)
+              failures[seat] = "no decision received before the turn deadline"
+              failureKinds[seat] = "episode_inconclusive"
+            if failures[seat].len > 0:
+              if not trajectory.isNil:
+                trajectory.recordDecision($turnIndex & "-" & $seat, $seat, observations[seat],
+                  attempts[seat], none(string), newJNull(),
+                  if attempts[seat].len > 0: asRejected else: asMissing)
+              failPlayer(seat, failureKinds[seat], failures[seat], trajectory)
           for seat in 0 ..< CabinetCount:
             if game.cabinets[game.cabinetOfSeat(seat)].isOut:
               continue
@@ -948,8 +933,6 @@ proc runServerLoop*(
         getMonoTime() + initDuration(seconds = ShutdownGraceSeconds)
       while getMonoTime() < graceUntil:
         sleep(200)
-      httpServer.close()
-      joinThread(serverThread)
       break
 
     # Higher slots can connect and acknowledge frames before slot zero joins.

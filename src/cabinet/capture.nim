@@ -51,11 +51,13 @@ proc receivedEvidence*(evidence: var DecisionAttempt, response: Response) =
 
 proc finishCapture*(trajectory: DecisionTrajectory, outcome: JsonNode) =
   if trajectory.isNil: return
-  let status = case outcome{"reason"}.getStr()
-    of "complete": esCompleted
-    of "fault": esFailed
-    else: esTruncated
-  trajectory.finish(status, outcome, outcome{"scores"})
+  let status = if outcome.hasKey("failed_policy_index"): esFailed
+    else:
+      case outcome{"reason"}.getStr()
+      of "complete": esCompleted
+      of "fault": esFailed
+      else: esTruncated
+  trajectory.finish(status, outcome, if outcome.hasKey("scores"): outcome["scores"] else: newJObject())
   let destination = getEnv(CogameSaveTrajectoryUriEnv)
   if destination.startsWith("http://") or destination.startsWith("https://"):
     let pool = newCurlPool(1)
